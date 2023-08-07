@@ -4,9 +4,10 @@ from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord
 from scipy.spatial import KDTree
 import numpy as np
-from tevcat import TeVCat, Source
-from matplotlib import figure, axes
+from tevcat import Source
+from matplotlib import figure, axes, colors
 import healpy as hp
+import pandas as pd
 
 
 @np.vectorize
@@ -27,6 +28,25 @@ def convert_angle(angle):
     if angle > 180:
         return angle - 360
     return angle
+
+
+def objectifyColumn(tab: Table, colname: str) -> None:
+    """
+    Turn the dtype of a column into `object`
+
+    Parameters
+    ----------
+    tab : astropy.table.Table
+        Table to modify
+
+    colname : str
+        Name of the column to modify
+
+    """
+    modcol = tab[colname].data.tolist()
+    modcol[0].append(None)
+    tab.replace_column(colname, modcol)
+    tab[colname][0].pop()
 
 
 def cat2hpx(lon, lat, nside, radec=True):
@@ -86,7 +106,7 @@ class Multiplets:
     path : str
         Path to the multiplets file
 
-    table : astropy.table.Table
+    table : pandas.DataFrame
         Table containing the multiplets
 
     Methods
@@ -145,6 +165,7 @@ class Multiplets:
             c=self.table["Nmax"],
             marker="*",
             zorder=1,
+            cmap="gist_ncar",
         )
         cbar = fig.colorbar(sc)
         cbar.set_label("Multiplet size")
@@ -197,9 +218,19 @@ class Multiplets:
         return len(self.table)
 
     def appendMultiplets(self, *others):
-        self.table = vstack(
-            [self.table, [other.table for other in others]], join_type="exact"
+        df = pd.concat(
+            [self.table.to_pandas(), *[other.table.to_pandas() for other in others]],
+            ignore_index=True,
         )
+        self.table = Table.from_pandas(df)
+        self.table.sort("Nmax")
+
+    def objectifyColumns(self) -> None:
+        for name in ["ID", "RA", "DEC", "TIME", "ENERGY"]:
+            objectifyColumn(self.table, name)
+
+    def __getitem__(self, index):
+        return self.table[index]
 
 
 def main():
@@ -226,8 +257,8 @@ def main():
     # fig.savefig(f"testing/figures/multiplets_aitoff_{band}.png", facecolor="white")
     # print("Done")
 
-    print(mplets.table["OBS_ID"])
-    print(np.unique(mplets.table["Nmax"]))
+    print(mplets.dataframe["OBS_ID"])
+    print(np.unique(mplets.dataframe["Nmax"]))
 
 
 if __name__ == "__main__":
