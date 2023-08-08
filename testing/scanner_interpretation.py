@@ -204,15 +204,15 @@ class Multiplets:
         )
         identified_sources = np.asarray(sources)[indices]
 
-        self.addSourceInfo(identified_sources, distances)
+        self.addTevCatSourceInfo(identified_sources, distances)
 
         return identified_sources, distances, indices
 
-    def addSourceInfo(
+    def addTevCatSourceInfo(
         self, identified_sources: list[Source], distances: list[float]
     ) -> None:
-        self.table["SOURCE"] = identified_sources
-        self.table["DISTANCES_DEG"] = distances
+        self.table["TEVCAT_SOURCE"] = identified_sources
+        self.table["TEVCAT_DISTANCES_DEG"] = distances
 
     def __len__(self) -> int:
         return len(self.table)
