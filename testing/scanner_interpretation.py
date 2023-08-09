@@ -50,7 +50,7 @@ def objectifyColumn(tab: Table, colname: str) -> None:
     tab[colname][0].pop()
 
 
-def get_Simbad_circle(sc: SkyCoord, radius_deg=0.2) -> str:
+def SkyCoord_to_SimbadCircle(sc: SkyCoord, radius_deg=0.2) -> str:
     """
     Return a simbad criteria string for a circle around a SkyCoord
 
@@ -74,26 +74,30 @@ def get_Simbad_circle(sc: SkyCoord, radius_deg=0.2) -> str:
     return f"region(circle,{ra} {prefix}{dec},{radius_deg}d)"
 
 
-def combine_Simbad_statements(statements: list[str], linker: str = "&") -> str:
+def radec_to_SimbadCircle(ra: float, dec: float, radius_deg=0.2) -> str:
     """
-    Combine Simbad criteria statements into a single string
+    Return a simbad criteria string for a circle around a SkyCoord
 
     Parameters
     ----------
-    statements : list[str]
-        List of Simbad criteria statements
+    ra_deg: float
+        Right ascension in degrees
 
-    linker : str (default: "&")
-        String to use to link the statements. Use "&" for AND and "|" for OR
+    dec_deg: float
+        Declination in degrees
+
+    radius_deg : float
+        Radius of the circle in degrees
 
     Returns
     -------
     str
-        Combined Simbad criteria string
+        Simbad criteria string
     """
-    linked = [f"{statement} {linker} " for statement in statements]
-    linked[-1] = linked[-1][: -(2 + len(linker))]
-    return linked
+    prefix = ""
+    if dec >= 0:
+        prefix += "+"
+    return f"region(circle,{ra} {prefix}{dec},{radius_deg}d)"
 
 
 def cat2hpx(lon, lat, nside, radec=True):
@@ -176,8 +180,25 @@ class Multiplets:
 
     """
 
-    default_incl_simbad_sources = [""]
-    default_excl_simbad_sources = [""]
+    # use incl xor excl, unless there is some overlap between categories
+    default_incl_simbad_sources = [
+        "N*",  # neutron star
+        "XB*",  # xray binary
+        "CV*",  # cataclysmic variable
+        "SN*",  # supernova
+        "SNR",  # supernova remnant
+        "AGN",  # active galactic nuclei
+        "SBG",  # starburst galaxy
+        "BH",  # black hole
+        "GWE",  # gravitational wave event
+        "ev",  # transient event
+        "var",  # variable source
+        "rB",  # radio burst
+        "Mas",  # Maser
+        "X",  # xray source
+        "gam",  # gamma source
+    ]
+    # default_excl_simbad_sources = ["bC*","sg*","sg*","Y*O","MS*","Ev*"]
 
     def __init__(self, path: str, simbad_sources_init: bool = True) -> None:
         self.paths = [path]
@@ -189,13 +210,13 @@ class Multiplets:
 
         if simbad_sources_init:
             self.inclSimbadSources(Multiplets.default_incl_simbad_sources)
-            self.exclSimbadSources(Multiplets.default_excl_simbad_sources)
+            # self.exclSimbadSources(Multiplets.default_excl_simbad_sources)
 
     def inclSimbadSources(self, sources: list[str]) -> None:
         self.incl_simbad_sources += sources
 
-    def exclSimbadSources(self, sources: list[str]) -> None:
-        self.excl_simbad_sources += sources
+    # def exclSimbadSources(self, sources: list[str]) -> None:
+    #     self.excl_simbad_sources += sources
 
     def loadMpletsBare(self, path) -> None:
         if path not in self.paths:
@@ -291,39 +312,44 @@ class Multiplets:
     def __getitem__(self, index):
         return self.table[index]
 
-    def constructSimbadCriteria(self):
-        coordinate_statements = [
-            get_Simbad_circle(coord) for coord in self.table["SkyCoord"]
-        ]
-        coords = f"({combine_Simbad_statements(coordinate_statements,linker='|')})"
+    def constructSimbadCriteria(self, coordinate_criteria: bool):
+        if coordinate_criteria:
+            coordinate_statements = [
+                radec_to_SimbadCircle(ra, dec)
+                for ra, dec in self.table["MEDIAN_RA", "MEDIAN_DEC"]
+            ]
+            coords = f"({' | '.join(coordinate_statements)})"
 
         incl_source_statements = [
             f"otypes={source}" for source in self.incl_simbad_sources
         ]
-        incl = f"({combine_Simbad_statements(incl_source_statements,linker='|')})"
+        incl = f"({' | '.join(incl_source_statements)})"
 
-        excl_source_statements = [
-            f"otypes!={source}" for source in self.excl_simbad_sources
-        ]
-        excl = f"({combine_Simbad_statements(excl_source_statements,linker='&')})"
+        # excl_source_statements = [
+        #     f"otypes!={source}" for source in self.excl_simbad_sources
+        # ]
+        # excl = f"({combine_Simbad_statements(excl_source_statements,linker='&')})"
 
         redshift = f"redshift < {self.redshift_UL}"
-
-        final_statement = combine_Simbad_statements(
-            [coords, incl, excl, redshift], linker="&"
-        )
+        if coordinate_criteria:
+            final_statement = " & ".join([coords, incl, redshift])
+        else:
+            final_statement = " & ".join([incl, redshift])
         return final_statement
 
-    def searchSimbad(self, criteria_statement: str = None):
+    def searchSimbad(
+        self, criteria_statement: str = None, coordinate_criteria: bool = False
+    ) -> Table:
         customSimbad = Simbad()
         customSimbad.remove_votable_fields("coordinates")
         customSimbad.add_votable_fields(
             "ra(d;A;ICRS;J2000)", "dec(d;D;ICRS;J2000)", "otype", "z_value"
         )
         if not criteria_statement:
-            criteria_statement = self.constructSimbadCriteria()
+            criteria_statement = self.constructSimbadCriteria(coordinate_criteria)
 
         search_results = customSimbad.query_criteria(criteria_statement)
+        return search_results
 
 
 def main():
