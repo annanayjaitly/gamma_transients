@@ -670,6 +670,9 @@ def triplet_hist2d_plotter(table, bins=50, position_src=None, save=False):
     plt.show()
 
 
+from matplotlib import colors
+
+
 def da_dt_hist2d_plotter(table, bins=50):
     """plots a 2D histogram of the da vs dt distribution
 
@@ -690,7 +693,8 @@ def da_dt_hist2d_plotter(table, bins=50):
     ax0.set_xlabel("log10[dt/ns]", weight="bold")
     ax0.set_facecolor("dimgrey")
 
-    figure.colorbar(im0, ax=ax0)
+    print("lognorm")
+    figure.colorbar(im0, ax=ax0, norm=colors.LogNorm())
 
     plt.show()
 

@@ -291,7 +291,12 @@ class Multiplets:
     def addTevCatSourceInfo(
         self, identified_sources: list[Source], distances: list[float]
     ) -> None:
-        self.table["TEVCAT_SOURCE"] = identified_sources
+        self.table["TEVCAT_SOURCE_NAME"] = [
+            source.canonical_name for source in identified_sources
+        ]
+        self.table["TEVCAT_SOURCE_TYPE"] = [
+            source.source_type_name for source in identified_sources
+        ]
         self.table["TEVCAT_DISTANCES_DEG"] = distances
 
     def __len__(self) -> int:
