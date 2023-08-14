@@ -385,5 +385,103 @@ def main():
     print(np.unique(mplets.dataframe["Nmax"]))
 
 
+def setup_mplets():
+    bands = [
+        "u_5_15",
+        "u_15_25",
+        "u_25_35",
+        "u_35_45",
+        "u_45_55",
+        "u_55_65",
+        "u_65_75",
+        "u_75_90",
+        "l_15_5",
+        "l_25_15",
+        "l_35_25",
+        "l_45_35",
+        "l_55_45",
+        "l_65_55",
+        "l_75_65",
+        "l_90_75",
+        "center",
+    ]
+    versions = ["hess1", "hess1u"]
+    paths = [
+        f"/lustre/fs22/group/hess/user/wybouwt/full_scanner_survey/{version}/{band}"
+        for band in bands
+        for version in versions
+    ]
+    # mplets = scani.Multiplets(paths[0])
+    # mplets.appendMultiplets(*[scani.Multiplets(path) for path in paths[1:]])
+    mplet_list = [Multiplets(path) for path in paths]
+
+    unicorns = [9, 18]
+    for j in unicorns:
+        mplet_list[j].objectifyColumns()
+
+    mplets = mplet_list[0]
+    mplets.appendMultiplets(*mplet_list[1:])
+
+    from tevcat import TeVCat
+
+    tevcat = TeVCat()
+    mplets.searchTeVCat(tevcat.sources)
+
+    with open("testing/mplets.pkl", "wb") as f:
+        dill.dump(mplets, f)
+
+
+def main_aitov():
+    with open("testing/mplets.pkl", "rb") as f:
+        mplets = dill.load(f)
+
+    nosource_mask = mplets.table["TEVCAT_DISTANCES_DEG"] >= 0.2
+    Nmin4_mask = mplets.table["Nmax"] >= 4
+    Nmin5_mask = mplets.table["Nmax"] >= 5
+    dt1sec_mask = mplets.table["dt"] <= 1e9
+
+    fig = figure.Figure((5, 3))
+    ax = fig.add_subplot(projection="aitoff")
+    scattersize = 15
+    current_mask = nosource_mask * Nmin4_mask * dt1sec_mask
+    ax.scatter(
+        -np.radians(convert_angle(mplets.table[current_mask]["MEDIAN_GLON"])),
+        np.radians(mplets.table[current_mask]["MEDIAN_GLAT"]),
+        s=scattersize,
+        marker="v",
+        zorder=1,
+        color="m",
+        label=r"$N=4, dt < 1\mathrm{s}$",
+    )
+    current_mask = nosource_mask * Nmin5_mask
+    ax.scatter(
+        -np.radians(convert_angle(mplets.table[current_mask]["MEDIAN_GLON"])),
+        np.radians(mplets.table[current_mask]["MEDIAN_GLAT"]),
+        s=scattersize,
+        marker="^",
+        zorder=2,
+        color="c",
+        label=r"$N=5, dt < 3\mathrm{s}$",
+    )
+
+    ax.fill_between(
+        np.linspace(-np.pi, np.pi, 1000),
+        np.radians(-5),
+        np.radians(5),
+        # color="k",
+        alpha=0.2,
+        label=r"$\mathrm{GLAT}: \pm 5\mathrm{deg}$",
+    )
+    ax.grid(True)
+    ax.set_xlabel(r"MEDIAN_GLON [deg]")
+    ax.set_ylabel(r"MEDIAN_GLAT [deg]")
+    fig.suptitle(
+        r"Skymap of multiplets, TeVCat sources ($\mathrm{distance} < 0.2\mathrm{deg}$) excluded"
+    )
+    ax.tick_params(grid_alpha=0.1, colors="gray", zorder=3, labelsize="x-small")
+    fig.legend(loc="lower right")
+    fig.savefig("testing/figures/combined/aitoff.pdf")
+
+
 if __name__ == "__main__":
-    main()
+    main_aitov()
