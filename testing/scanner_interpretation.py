@@ -8,9 +8,11 @@ from tevcat import Source
 from matplotlib import figure, axes, colors
 import healpy as hp
 import pandas as pd
-from astroquery.simbad import Simbad
 import numexpr
-import numexpr
+from gammapy.data import DataStore
+from tqdm import tqdm
+
+# from astroquery.simbad import Simbad
 
 
 def sphere_dist(ra1, dec1, ra2, dec2):
@@ -214,35 +216,35 @@ class Multiplets:
     """
 
     # use incl xor excl, unless there is some overlap between categories
-    default_incl_simbad_sources = [
-        "N*",  # neutron star
-        "XB*",  # xray binary
-        "CV*",  # cataclysmic variable
-        "SN*",  # supernova
-        "SNR",  # supernova remnant
-        "AGN",  # active galactic nuclei
-        "SBG",  # starburst galaxy
-        "BH",  # black hole
-        "GWE",  # gravitational wave event
-        "ev",  # transient event
-        "var",  # variable source
-        "rB",  # radio burst
-        "Mas",  # Maser
-        "X",  # xray source
-        "gam",  # gamma source
-    ]
+    # default_incl_simbad_sources = [
+    #     "N*",  # neutron star
+    #     "XB*",  # xray binary
+    #     "CV*",  # cataclysmic variable
+    #     "SN*",  # supernova
+    #     "SNR",  # supernova remnant
+    #     "AGN",  # active galactic nuclei
+    #     "SBG",  # starburst galaxy
+    #     "BH",  # black hole
+    #     "GWE",  # gravitational wave event
+    #     "ev",  # transient event
+    #     "var",  # variable source
+    #     "rB",  # radio burst
+    #     "Mas",  # Maser
+    #     "X",  # xray source
+    #     "gam",  # gamma source
+    # ]
     # default_excl_simbad_sources = ["bC*","sg*","sg*","Y*O","MS*","Ev*"]
 
     def __init__(self, path: str, simbad_sources_init: bool = True) -> None:
         self.paths = [path]
         self.loadMpletsBare(path)
-        self.incl_simbad_sources = []
-        self.excl_simbad_sources = []
-        self.redshift_UL = 2.0
+        # self.incl_simbad_sources = []
+        # self.excl_simbad_sources = []
+        # self.redshift_UL = 2.0
 
-        if simbad_sources_init:
-            self.inclSimbadSources(Multiplets.default_incl_simbad_sources)
-            # self.exclSimbadSources(Multiplets.default_excl_simbad_sources)
+        # if simbad_sources_init:
+        #     self.inclSimbadSources(Multiplets.default_incl_simbad_sources)
+        #     # self.exclSimbadSources(Multiplets.default_excl_simbad_sources)
 
     def inclSimbadSources(self, sources: list[str]) -> None:
         self.incl_simbad_sources += sources
@@ -340,8 +342,18 @@ class Multiplets:
             ignore_index=True,
         )
         self.table = Table.from_pandas(df)
-        self.table.sort("Nmax")
+        self.table.sort("OBS_ID")
         self.addCoordinateInfo()
+
+    def createReduced(
+        self,
+        min_source_dist_deg: float = 0.2,
+        galactic_plane_halfwidth_deg: float = 5.0,
+    ):
+        noTeVCat_mask = self.table["TEVCAT_DISTANCES_DEG"] >= min_source_dist_deg
+        xgal_mask = np.abs(self.table["MEDIAN_GLAT"]) > galactic_plane_halfwidth_deg
+
+        self.reduced = self.table[noTeVCat_mask * xgal_mask]
 
     def objectifyColumns(self) -> None:
         for name in ["ID", "RA", "DEC", "TIME", "ENERGY"]:
@@ -350,53 +362,103 @@ class Multiplets:
     def __getitem__(self, index):
         return self.table[index]
 
-    def constructSimbadCriteria(self, coordinate_criteria: bool):
-        if coordinate_criteria:
-            coordinate_statements = [
-                radec_to_SimbadCircle(ra, dec)
-                for ra, dec in self.table["MEDIAN_RA", "MEDIAN_DEC"]
-            ]
-            coords = f"({' | '.join(coordinate_statements)})"
-
-        incl_source_statements = [
-            f"otypes={source}" for source in self.incl_simbad_sources
-        ]
-        incl = f"({' | '.join(incl_source_statements)})"
-
-        # excl_source_statements = [
-        #     f"otypes!={source}" for source in self.excl_simbad_sources
-        # ]
-        # excl = f"({combine_Simbad_statements(excl_source_statements,linker='&')})"
-
-        redshift = f"redshift < {self.redshift_UL}"
-        if coordinate_criteria:
-            final_statement = " & ".join([coords, incl, redshift])
-        else:
-            final_statement = " & ".join([incl, redshift])
-        return final_statement
-
-    def searchSimbad(
-        self, criteria_statement: str = None, coordinate_criteria: bool = False
-    ) -> Table:
-        customSimbad = Simbad()
-        customSimbad.remove_votable_fields("coordinates")
-        customSimbad.add_votable_fields(
-            "ra(d;A;ICRS;J2000)", "dec(d;D;ICRS;J2000)", "otype", "z_value"
+    def addLocalBackgroundRate(
+        self, datastores: list[DataStore], radius_deg: float = 0.2
+    ):
+        ds_mplet_indices = in_which_container(
+            self.reduced["OBS_ID"].data, [ds.obs_ids for ds in datastores]
         )
-        if not criteria_statement:
-            criteria_statement = self.constructSimbadCriteria(coordinate_criteria)
 
-        search_results = customSimbad.query_criteria(criteria_statement)
-        return search_results
+        observation_per_ds = [ds.get_observations() for ds in datastores]
+        obs_id_to_index_per_ds = {
+            obs.ids[index]: index
+            for obs in observation_per_ds
+            for index in range(len(obs))
+        }
+        navigation_table = Table(
+            [range(len(self.reduced)), self.reduced["OBS_ID"], ds_mplet_indices],
+            names=("MPLET_INDEX", "OBS_ID", "DS_INDEX"),
+        )
+        navigation_table["OBS_INDEX_WITHIN_DS"] = list(
+            map(obs_id_to_index_per_ds.get, navigation_table["OBS_ID"].data)
+        )
+
+        observation_rates = []
+
+        # for i,ds in enumerate(datastores):
+        #     observations = ds.get_observations(self.reduced[ds_index == i]["OBS_ID"])
+        #     for obs in observations:
+        #         mplet_row = self.reduced[self.reduced["OBS_ID"]==obs.obs_id]
+        #         if len(mplet_row) != 1:
+        #             raise ValueError(f"mplet_row has length {len(mplet_row)} instead of one: there is non-unique OBS_ID ")
+        #         run_distances = sphere_dist(obs.events.table["RA"].data,obs.events.table["DEC"].data, ["MEDIAN_RA"].data[0])
+
+        for row in navigation_table:
+            obs = observation_per_ds[row["DS_INDEX"]][row["OBS_INDEX_WITHIN_DS"]]
+            run_distances = sphere_dist(
+                obs.events.table["RA"].data,
+                obs.events.table["DEC"].data,
+                ["MEDIAN_RA"].data[0],
+            )
+
+        return None
+
+    # def constructSimbadCriteria(self, coordinate_criteria: bool):
+    #     if coordinate_criteria:
+    #         coordinate_statements = [
+    #             radec_to_SimbadCircle(ra, dec)
+    #             for ra, dec in self.table["MEDIAN_RA", "MEDIAN_DEC"]
+    #         ]
+    #         coords = f"({' | '.join(coordinate_statements)})"
+
+    #     incl_source_statements = [
+    #         f"otypes={source}" for source in self.incl_simbad_sources
+    #     ]
+    #     incl = f"({' | '.join(incl_source_statements)})"
+
+    #     # excl_source_statements = [
+    #     #     f"otypes!={source}" for source in self.excl_simbad_sources
+    #     # ]
+    #     # excl = f"({combine_Simbad_statements(excl_source_statements,linker='&')})"
+
+    #     redshift = f"redshift < {self.redshift_UL}"
+    #     if coordinate_criteria:
+    #         final_statement = " & ".join([coords, incl, redshift])
+    #     else:
+    #         final_statement = " & ".join([incl, redshift])
+    #     return final_statement
+
+    # def searchSimbad(
+    #     self, criteria_statement: str = None, coordinate_criteria: bool = False
+    # ) -> Table:
+    #     customSimbad = Simbad()
+    #     customSimbad.remove_votable_fields("coordinates")
+    #     customSimbad.add_votable_fields(
+    #         "ra(d;A;ICRS;J2000)", "dec(d;D;ICRS;J2000)", "otype", "z_value"
+    #     )
+    #     if not criteria_statement:
+    #         criteria_statement = self.constructSimbadCriteria(coordinate_criteria)
+
+    #     search_results = customSimbad.query_criteria(criteria_statement)
+    #     return search_results
 
 
-def in_which_container(item, c1, c2, out_c1=1, out_c2=2, out_neither=0):
-    s1, s2 = set(c1), set(c2)
-    if item in s1:
-        return out_c1
-    elif item in s2:
-        return out_c2
-    return out_neither
+# @np.vectorize
+# def in_which_container(item, c1, c2, out_c1=0, out_c2=1, out_neither=None):
+#     s1, s2 = set(c1), set(c2)
+#     if item in s1:
+#         return out_c1
+#     elif item in s2:
+#         return out_c2
+
+
+@np.vectorize
+def in_which_container(item, containers: list[set]):
+    sets = [set(c) for c in containers]
+    for i, set in enumerate(sets):
+        if item in set:
+            return i
+    raise LookupError("Item is not in any container. Please ensure it is.")
 
 
 def main():
@@ -522,11 +584,8 @@ def main_aitov(mplets):
     fig.savefig("testing/figures/combined/aitoff.pdf")
 
 
-# def get_rate(mplets):
-
-
 if __name__ == "__main__":
-    generate_new_mplets = True
+    generate_new_mplets = False
 
     if generate_new_mplets:
         setup_mplets()
