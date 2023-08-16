@@ -9,6 +9,39 @@ from matplotlib import figure, axes, colors
 import healpy as hp
 import pandas as pd
 from astroquery.simbad import Simbad
+import numexpr
+import numexpr
+
+
+def sphere_dist(ra1, dec1, ra2, dec2):
+    """
+    Haversine formula for angular distance on a sphere: more stable at poles.
+    This version uses arctan instead of arcsin and thus does better with sign
+    conventions.  This uses numexpr to speed expression evaluation by a factor
+    of 2 to 3.
+
+    :param ra1: first RA (deg)
+    :param dec1: first Dec (deg)
+    :param ra2: second RA (deg)
+    :param dec2: second Dec (deg)
+
+    :returns: angular separation distance (deg)
+
+    https://stackoverflow.com/a/71510946
+    """
+
+    ra1 = np.radians(ra1).astype(np.float64)
+    ra2 = np.radians(ra2).astype(np.float64)
+    dec1 = np.radians(dec1).astype(np.float64)
+    dec2 = np.radians(dec2).astype(np.float64)
+
+    numerator = numexpr.evaluate(
+        "sin((dec2 - dec1) / 2) ** 2 + "
+        "cos(dec1) * cos(dec2) * sin((ra2 - ra1) / 2) ** 2"
+    )
+
+    dists = numexpr.evaluate("2 * arctan2(numerator ** 0.5, (1 - numerator) ** 0.5)")
+    return np.degrees(dists)
 
 
 @np.vectorize
@@ -203,7 +236,6 @@ class Multiplets:
     def __init__(self, path: str, simbad_sources_init: bool = True) -> None:
         self.paths = [path]
         self.loadMpletsBare(path)
-        self.addCoordinateInfo()
         self.incl_simbad_sources = []
         self.excl_simbad_sources = []
         self.redshift_UL = 2.0
@@ -309,6 +341,7 @@ class Multiplets:
         )
         self.table = Table.from_pandas(df)
         self.table.sort("Nmax")
+        self.addCoordinateInfo()
 
     def objectifyColumns(self) -> None:
         for name in ["ID", "RA", "DEC", "TIME", "ENERGY"]:
@@ -355,6 +388,15 @@ class Multiplets:
 
         search_results = customSimbad.query_criteria(criteria_statement)
         return search_results
+
+
+def in_which_container(item, c1, c2, out_c1=1, out_c2=2, out_neither=0):
+    s1, s2 = set(c1), set(c2)
+    if item in s1:
+        return out_c1
+    elif item in s2:
+        return out_c2
+    return out_neither
 
 
 def main():
@@ -427,14 +469,11 @@ def setup_mplets():
     tevcat = TeVCat()
     mplets.searchTeVCat(tevcat.sources)
 
-    with open("testing/mplets.pkl", "wb") as f:
+    with open("testing/pickles/mplets.pkl", "wb") as f:
         dill.dump(mplets, f)
 
 
-def main_aitov():
-    with open("testing/mplets.pkl", "rb") as f:
-        mplets = dill.load(f)
-
+def main_aitov(mplets):
     nosource_mask = mplets.table["TEVCAT_DISTANCES_DEG"] >= 0.2
     Nmin4_mask = mplets.table["Nmax"] >= 4
     Nmin5_mask = mplets.table["Nmax"] >= 5
@@ -483,5 +522,14 @@ def main_aitov():
     fig.savefig("testing/figures/combined/aitoff.pdf")
 
 
+# def get_rate(mplets):
+
+
 if __name__ == "__main__":
-    main_aitov()
+    generate_new_mplets = True
+
+    if generate_new_mplets:
+        setup_mplets()
+
+    with open("testing/pickles/mplets.pkl", "rb") as f:
+        mplets = dill.load(f)
