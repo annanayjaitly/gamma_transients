@@ -363,37 +363,46 @@ class Multiplets:
         return self.table[index]
 
     def addLocalBackgroundRate(
-        self, datastores: list[DataStore], radius_deg: float = 0.2
+        self, datastores: list[DataStore], radius_deg: float = 0.2, navpath: str = None
     ):
-        print("Getting ds mplet_indices")  # quite slow but alright
-        ds_mplet_indices = [
-            in_which_container(id, containers=[ds.obs_ids for ds in datastores])
-            for id in self.reduced["OBS_ID"].data
-        ]
-
-        print("Getting ds observations")
         observation_per_ds = [
             ds.get_observations(
                 np.unique(self.reduced["OBS_ID"].data[ds_mplet_indices == i])
             )
             for i, ds in enumerate(datastores)
         ]
-        obs_id_to_index_per_ds = {
-            obs.ids[index]: index
-            for obs in observation_per_ds
-            for index in range(len(obs))
-        }
+        try:
+            with open(navpath, "rb") as f:
+                navigation_table = dill.load(f)
+            print(f"Loaded navtable from {navpath}.")
+        except:
+            print("Not loading navtable")
+            print("Getting ds mplet_indices")  # quite slow but alright
+            ds_mplet_indices = [
+                in_which_container(id, containers=[ds.obs_ids for ds in datastores])
+                for id in self.reduced["OBS_ID"].data
+            ]
 
-        print("building navigation table")
-        navigation_table = Table(
-            [range(len(self.reduced)), self.reduced["OBS_ID"], ds_mplet_indices],
-            names=("MPLET_INDEX", "OBS_ID", "DS_INDEX"),
-        )
-        print("completing navigation table")
-        navigation_table["OBS_INDEX_WITHIN_DS"] = list(
-            map(obs_id_to_index_per_ds.get, navigation_table["OBS_ID"].data)
-        )
-        print(navigation_table[-5:])
+            print("Getting ds observations")
+            obs_id_to_index_per_ds = {
+                obs.ids[index]: index
+                for obs in observation_per_ds
+                for index in range(len(obs))
+            }
+
+            print("building navigation table")
+            navigation_table = Table(
+                [range(len(self.reduced)), self.reduced["OBS_ID"], ds_mplet_indices],
+                names=("MPLET_INDEX", "OBS_ID", "DS_INDEX"),
+            )
+            print("completing navigation table")
+            navigation_table["OBS_INDEX_WITHIN_DS"] = list(
+                map(obs_id_to_index_per_ds.get, navigation_table["OBS_ID"].data)
+            )
+
+            with open("testing/pickles/navigationtable.pkl", "wb") as f:
+                dill.dump(navigation_table, f)
+
         observation_rates = []
 
         for row in tqdm(navigation_table):
