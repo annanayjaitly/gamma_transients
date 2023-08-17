@@ -365,41 +365,52 @@ class Multiplets:
     def addLocalBackgroundRate(
         self, datastores: list[DataStore], radius_deg: float = 0.2
     ):
-        ds_mplet_indices = in_which_container(
-            self.reduced["OBS_ID"].data, [ds.obs_ids for ds in datastores]
-        )
+        print("Getting ds mplet_indices")  # quite slow but alright
+        ds_mplet_indices = [
+            in_which_container(id, containers=[ds.obs_ids for ds in datastores])
+            for id in self.reduced["OBS_ID"].data
+        ]
 
-        observation_per_ds = [ds.get_observations() for ds in datastores]
+        print("Getting ds observations")
+        observation_per_ds = [
+            ds.get_observations(
+                np.unique(self.reduced["OBS_ID"].data[ds_mplet_indices == i])
+            )
+            for i, ds in enumerate(datastores)
+        ]
         obs_id_to_index_per_ds = {
             obs.ids[index]: index
             for obs in observation_per_ds
             for index in range(len(obs))
         }
+
+        print("building navigation table")
         navigation_table = Table(
             [range(len(self.reduced)), self.reduced["OBS_ID"], ds_mplet_indices],
             names=("MPLET_INDEX", "OBS_ID", "DS_INDEX"),
         )
+        print("completing navigation table")
         navigation_table["OBS_INDEX_WITHIN_DS"] = list(
             map(obs_id_to_index_per_ds.get, navigation_table["OBS_ID"].data)
         )
-
+        print(navigation_table[-5:])
         observation_rates = []
 
-        # for i,ds in enumerate(datastores):
-        #     observations = ds.get_observations(self.reduced[ds_index == i]["OBS_ID"])
-        #     for obs in observations:
-        #         mplet_row = self.reduced[self.reduced["OBS_ID"]==obs.obs_id]
-        #         if len(mplet_row) != 1:
-        #             raise ValueError(f"mplet_row has length {len(mplet_row)} instead of one: there is non-unique OBS_ID ")
-        #         run_distances = sphere_dist(obs.events.table["RA"].data,obs.events.table["DEC"].data, ["MEDIAN_RA"].data[0])
-
-        for row in navigation_table:
+        for row in tqdm(navigation_table):
+            print(row["OBS_INDEX_WITHIN_DS"])
             obs = observation_per_ds[row["DS_INDEX"]][row["OBS_INDEX_WITHIN_DS"]]
             run_distances = sphere_dist(
                 obs.events.table["RA"].data,
                 obs.events.table["DEC"].data,
-                ["MEDIAN_RA"].data[0],
+                self.reduced[row["MPLET_INDEX"]]["MEDIAN_RA"],
+                self.reduced[row["MPLET_INDEX"]]["MEDIAN_DEC"],
             )
+            observation_rates.append(
+                len(obs.events.table[run_distances < radius_deg])
+                / obs.obs_info["LIVETIME"]
+            )
+
+        self.reduced["LOCAL_BKG_PHOT_RATE"] = observation_rates
 
         return None
 
@@ -443,50 +454,41 @@ class Multiplets:
     #     return search_results
 
 
-# @np.vectorize
-# def in_which_container(item, c1, c2, out_c1=0, out_c2=1, out_neither=None):
-#     s1, s2 = set(c1), set(c2)
-#     if item in s1:
-#         return out_c1
-#     elif item in s2:
-#         return out_c2
-
-
-@np.vectorize
 def in_which_container(item, containers: list[set]):
     sets = [set(c) for c in containers]
-    for i, set in enumerate(sets):
-        if item in set:
+    for i, myset in enumerate(sets):
+        if item in myset:
             return i
     raise LookupError("Item is not in any container. Please ensure it is.")
 
 
+def getDataStores():
+    hess1_datastore = DataStore.from_dir("$HESS1")
+    hess1u_datastore = DataStore.from_dir("$HESS1U")
+
+    return [hess1_datastore, hess1u_datastore]
+
+
 def main():
-    from os import getcwd
+    print("Loading mplets")
+    with open("testing/pickles/mplets.pkl", "rb") as f:
+        mplets = dill.load(f)
 
-    band = "test"
-    band_bounds = [-80, -78]
+    print("Got mplets, getting datastores.")
+    datastores = getDataStores()
+    print("Creating reduced dataset")
+    mplets.createReduced()
+    print("Adding local background rate to mplets.reduced")
+    mplets.addLocalBackgroundRate(datastores)
 
-    print(f"Current working directory: {getcwd()}")
+    # fig = figure.Figure()
+    # ax = fig.add_subplot()
+    # ax.hist(mplets.reduced["LOCAL_BKG_PHOT_RATE"], bins="fd", histtype="step")
 
-    # print("Loading TeVCat.")
-    # tevcat = TeVCat()
-    # sources = tevcat.getTeVCatSources()
+    # ax.set_xlabel(r"Local photon background rate [$\mathrm{s}^{-1}$]")
+    # ax.set_ylabel(r"Counts")
 
-    path = f"/lustre/fs22/group/hess/user/wybouwt/full_scanner_survey/{band}"
-
-    print("Initializing Multiplets.")
-    mplets = Multiplets(path)
-    print(f"Found {len(mplets)} multiplets.")
-
-    # print("Creating figure.")
-    # fig, ax = mplets.getAitoffFigure(bounds_deg=band_bounds)
-
-    # fig.savefig(f"testing/figures/multiplets_aitoff_{band}.png", facecolor="white")
-    # print("Done")
-
-    print(mplets.dataframe["OBS_ID"])
-    print(np.unique(mplets.dataframe["Nmax"]))
+    # fig.savefig("testing/figures/combined/reduced_phot_bkg_rate.png", facecolor="white")
 
 
 def setup_mplets():
@@ -590,5 +592,4 @@ if __name__ == "__main__":
     if generate_new_mplets:
         setup_mplets()
 
-    with open("testing/pickles/mplets.pkl", "rb") as f:
-        mplets = dill.load(f)
+    main()
