@@ -1,8 +1,9 @@
 # from gamma_transients import core
 import dill
-from astropy.table import Table
+from astropy.table import Table, Column
 from astropy.coordinates import SkyCoord
 from scipy.spatial import KDTree
+from scipy.stats import expon
 import numpy as np
 from tevcat import Source
 from matplotlib import figure, axes, colors
@@ -311,48 +312,55 @@ class Multiplets:
         return self.table[index]
 
     def addLocalBackgroundRate(
-        self, datastores: list[DataStore], radius_deg: float = 0.2, navpath: str = None
+        self, datastores: list[DataStore], radius_deg: float = 0.1, navpath: str = None
     ):
+        """
+        ==============================
+        Creating the navigation table
+        ==============================
+        """
         try:
             with open(navpath, "rb") as f:
                 navigation_table = dill.load(f)
             print(f"Loaded navtable from {navpath}.")
+            print("Getting ds observations.")
             observation_per_ds = [
                 ds.get_observations(
-                    np.unique(
-                        self.reduced["OBS_ID"].data[navigation_table["DS_INDEX"] == i]
-                    )
+                    np.unique(self.reduced["OBS_ID"].data),
+                    skip_missing=True,
+                    required_irf="all-optional",
                 )
-                for i, ds in enumerate(datastores)
+                for ds in datastores
             ]
+            print("Got observations")
 
         except TypeError:
-            print("Not loading navtable")
-            print("Getting ds mplet_indices")  # quite slow but alright
+            print("Not loading navtable.")
 
-            print("Getting ds observations")
+            print("Getting ds observations.")
 
             observation_per_ds = [
                 ds.get_observations(
                     np.unique(
                         self.reduced["OBS_ID"].data[self.reduced["DS_INDEX"] == i]
-                    )
+                    ),
+                    required_irf="all-optional",
                 )
-                for i, ds in enumerate(tqdm(datastores))
+                for i, ds in enumerate(datastores)
             ]
             print("Got observations")
 
             # mapping obs id to index within the relevant datastore. Note that this is non-injective
-            obs_id_to_index_per_ds = defaultdict(list)
-            for obs in tqdm(observation_per_ds):
-                print(f"observations in a datastore: {len(obs)}")
-                for index in tqdm(range(len(obs))):
-                    obs_id_to_index_per_ds[obs.ids[index]].append(index)
+            obs_id_to_index_per_ds = dict()
+            for obs in observation_per_ds:
+                obs_id_to_index_per_ds.update(
+                    {int(obs.ids[index]): index for index in range(len(obs))}
+                )
 
             with open("testing/pickles/obs_id_to_index_per_ds_dict.pkl", "wb") as f:
                 dill.dump(obs_id_to_index_per_ds, f)
 
-            print("building navigation table")
+            print("Building navigation table")
             navigation_table = Table(
                 [
                     range(len(self.reduced)),
@@ -360,35 +368,53 @@ class Multiplets:
                     self.reduced["DS_INDEX"],
                 ],
                 names=("MPLET_INDEX", "OBS_ID", "DS_INDEX"),
+                dtype=[int, int, int],
             )
             print("completing navigation table")
-            navigation_table["OBS_INDEX_WITHIN_DS"] = list(
-                map(
-                    obs_id_to_index_per_ds.get,
-                    navigation_table["OBS_ID"].data.astype(str),
-                )
+            temp = Column(
+                name="OBS_INDEX_WITHIN_DS",
+                data=list(
+                    map(obs_id_to_index_per_ds.get, navigation_table["OBS_ID"].data)
+                ),
+                dtype=int,
             )
+            navigation_table.add_column(temp)
 
             with open("testing/pickles/navigationtable.pkl", "wb") as f:
                 dill.dump(navigation_table, f)
 
-        observation_rates = []
+        """
+        =========================
+        Getting the photon rates
+        =========================
+        """
+        print("Getting photon rates.")
+        expon_fit_parameters = []
 
         for row in tqdm(navigation_table):
-            print(row["OBS_INDEX_WITHIN_DS"])
-            obs = observation_per_ds[row["DS_INDEX"]][row["OBS_INDEX_WITHIN_DS"]]
+            obs = observation_per_ds[row["DS_INDEX"]][int(row["OBS_INDEX_WITHIN_DS"])]
             run_distances = sphere_dist(
                 obs.events.table["RA"].data,
                 obs.events.table["DEC"].data,
                 self.reduced[row["MPLET_INDEX"]]["MEDIAN_RA"],
                 self.reduced[row["MPLET_INDEX"]]["MEDIAN_DEC"],
             )
-            observation_rates.append(
-                len(obs.events.table[run_distances < radius_deg])
-                / obs.obs_info["LIVETIME"]
+            # expon_fit_parameters.append(
+            #     len(obs.events.table[run_distances < radius_deg])
+            #     / obs.obs_info["LIVETIME"]
+            # )
+            expon_fit_parameters.append(
+                expon.fit(
+                    np.diff(
+                        np.sort(obs.events.table[run_distances < radius_deg]["TIME"])
+                    )
+                )
             )
 
-        self.reduced["LOCAL_BKG_PHOT_RATE"] = observation_rates
+        self.reduced["LOCAL_BKG_PHOT_DT_EXPON_FIT"] = expon_fit_parameters
+
+        with open("testing/pickles/reduced_with_bkg.pkl", "wb") as f:
+            dill.dump(self.reduced, f)
 
         return None
 
