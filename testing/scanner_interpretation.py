@@ -11,6 +11,7 @@ import pandas as pd
 import numexpr
 from gammapy.data import DataStore
 from tqdm import tqdm
+from collections import defaultdict
 
 # from astroquery.simbad import Simbad
 
@@ -85,30 +86,6 @@ def objectifyColumn(tab: Table, colname: str) -> None:
     tab[colname][0].pop()
 
 
-def SkyCoord_to_SimbadCircle(sc: SkyCoord, radius_deg=0.2) -> str:
-    """
-    Return a simbad criteria string for a circle around a SkyCoord
-
-    Parameters
-    ----------
-    sc : astropy.coordinates.SkyCoord
-        SkyCoord around which to search
-
-    radius_deg : float
-        Radius of the circle in degrees
-
-    Returns
-    -------
-    str
-        Simbad criteria string
-    """
-    ra, dec = sc.icrs.ra.deg, sc.icrs.dec.deg
-    prefix = ""
-    if dec >= 0:
-        prefix += "+"
-    return f"region(circle,{ra} {prefix}{dec},{radius_deg}d)"
-
-
 def radec_to_SimbadCircle(ra: float, dec: float, radius_deg=0.2) -> str:
     """
     Return a simbad criteria string for a circle around a SkyCoord
@@ -143,7 +120,7 @@ def cat2hpx(lon, lat, nside, radec=True):
     Parameters
     ----------
     lon, lat : (ndarray, ndarray)
-        Coordinates of the sources in degree. If radec=True, assume input is in the icrs
+        Coordinates of the sources in degree. If radec=True, assume input is in the fk5
         coordinate system. Otherwise assume input is glon, glat
 
     nside : int
@@ -162,7 +139,7 @@ def cat2hpx(lon, lat, nside, radec=True):
     npix = hp.nside2npix(nside)
 
     if radec:
-        eq = SkyCoord(lon, lat, frame="icrs", unit="deg")
+        eq = SkyCoord(lon, lat, frame="fk5", unit="deg")
         l, b = eq.galactic.l.value, eq.galactic.b.value
     else:
         l, b = lon, lat
@@ -215,42 +192,12 @@ class Multiplets:
 
     """
 
-    # use incl xor excl, unless there is some overlap between categories
-    # default_incl_simbad_sources = [
-    #     "N*",  # neutron star
-    #     "XB*",  # xray binary
-    #     "CV*",  # cataclysmic variable
-    #     "SN*",  # supernova
-    #     "SNR",  # supernova remnant
-    #     "AGN",  # active galactic nuclei
-    #     "SBG",  # starburst galaxy
-    #     "BH",  # black hole
-    #     "GWE",  # gravitational wave event
-    #     "ev",  # transient event
-    #     "var",  # variable source
-    #     "rB",  # radio burst
-    #     "Mas",  # Maser
-    #     "X",  # xray source
-    #     "gam",  # gamma source
-    # ]
-    # default_excl_simbad_sources = ["bC*","sg*","sg*","Y*O","MS*","Ev*"]
-
     def __init__(self, path: str, simbad_sources_init: bool = True) -> None:
         self.paths = [path]
         self.loadMpletsBare(path)
-        # self.incl_simbad_sources = []
-        # self.excl_simbad_sources = []
-        # self.redshift_UL = 2.0
-
-        # if simbad_sources_init:
-        #     self.inclSimbadSources(Multiplets.default_incl_simbad_sources)
-        #     # self.exclSimbadSources(Multiplets.default_excl_simbad_sources)
 
     def inclSimbadSources(self, sources: list[str]) -> None:
         self.incl_simbad_sources += sources
-
-    # def exclSimbadSources(self, sources: list[str]) -> None:
-    #     self.excl_simbad_sources += sources
 
     def loadMpletsBare(self, path) -> None:
         if path not in self.paths:
@@ -267,7 +214,7 @@ class Multiplets:
         self.table["SkyCoord"] = SkyCoord(
             self.table["MEDIAN_RA"],
             self.table["MEDIAN_DEC"],
-            frame="icrs",
+            frame="fk5",
             unit="deg",
         )
         self.table["MEDIAN_GLAT"] = self.table["SkyCoord"].galactic.b
@@ -305,7 +252,7 @@ class Multiplets:
 
     def searchTeVCat(self, sources: list[Source]):
         coordinates = np.asarray(
-            [[source.getICRS().ra.deg, source.getICRS().dec.deg] for source in sources]
+            [[source.getFK5().ra.deg, source.getFK5().dec.deg] for source in sources]
         )
 
         kdtree = KDTree(coordinates)
@@ -354,6 +301,7 @@ class Multiplets:
         xgal_mask = np.abs(self.table["MEDIAN_GLAT"]) > galactic_plane_halfwidth_deg
 
         self.reduced = self.table[noTeVCat_mask * xgal_mask]
+        print(f"Reducement of {len(self)} to {len(self.reduced)} rows.")
 
     def objectifyColumns(self) -> None:
         for name in ["ID", "RA", "DEC", "TIME", "ENERGY"]:
@@ -365,39 +313,60 @@ class Multiplets:
     def addLocalBackgroundRate(
         self, datastores: list[DataStore], radius_deg: float = 0.2, navpath: str = None
     ):
-        observation_per_ds = [
-            ds.get_observations(
-                np.unique(self.reduced["OBS_ID"].data[ds_mplet_indices == i])
-            )
-            for i, ds in enumerate(datastores)
-        ]
         try:
             with open(navpath, "rb") as f:
                 navigation_table = dill.load(f)
             print(f"Loaded navtable from {navpath}.")
-        except:
-            print("Not loading navtable")
-            print("Getting ds mplet_indices")  # quite slow but alright
-            ds_mplet_indices = [
-                in_which_container(id, containers=[ds.obs_ids for ds in datastores])
-                for id in self.reduced["OBS_ID"].data
+            observation_per_ds = [
+                ds.get_observations(
+                    np.unique(
+                        self.reduced["OBS_ID"].data[navigation_table["DS_INDEX"] == i]
+                    )
+                )
+                for i, ds in enumerate(datastores)
             ]
 
+        except TypeError:
+            print("Not loading navtable")
+            print("Getting ds mplet_indices")  # quite slow but alright
+
             print("Getting ds observations")
-            obs_id_to_index_per_ds = {
-                obs.ids[index]: index
-                for obs in observation_per_ds
-                for index in range(len(obs))
-            }
+
+            observation_per_ds = [
+                ds.get_observations(
+                    np.unique(
+                        self.reduced["OBS_ID"].data[self.reduced["DS_INDEX"] == i]
+                    )
+                )
+                for i, ds in enumerate(tqdm(datastores))
+            ]
+            print("Got observations")
+
+            # mapping obs id to index within the relevant datastore. Note that this is non-injective
+            obs_id_to_index_per_ds = defaultdict(list)
+            for obs in tqdm(observation_per_ds):
+                print(f"observations in a datastore: {len(obs)}")
+                for index in tqdm(range(len(obs))):
+                    obs_id_to_index_per_ds[obs.ids[index]].append(index)
+
+            with open("testing/pickles/obs_id_to_index_per_ds_dict.pkl", "wb") as f:
+                dill.dump(obs_id_to_index_per_ds, f)
 
             print("building navigation table")
             navigation_table = Table(
-                [range(len(self.reduced)), self.reduced["OBS_ID"], ds_mplet_indices],
+                [
+                    range(len(self.reduced)),
+                    self.reduced["OBS_ID"],
+                    self.reduced["DS_INDEX"],
+                ],
                 names=("MPLET_INDEX", "OBS_ID", "DS_INDEX"),
             )
             print("completing navigation table")
             navigation_table["OBS_INDEX_WITHIN_DS"] = list(
-                map(obs_id_to_index_per_ds.get, navigation_table["OBS_ID"].data)
+                map(
+                    obs_id_to_index_per_ds.get,
+                    navigation_table["OBS_ID"].data.astype(str),
+                )
             )
 
             with open("testing/pickles/navigationtable.pkl", "wb") as f:
@@ -423,45 +392,6 @@ class Multiplets:
 
         return None
 
-    # def constructSimbadCriteria(self, coordinate_criteria: bool):
-    #     if coordinate_criteria:
-    #         coordinate_statements = [
-    #             radec_to_SimbadCircle(ra, dec)
-    #             for ra, dec in self.table["MEDIAN_RA", "MEDIAN_DEC"]
-    #         ]
-    #         coords = f"({' | '.join(coordinate_statements)})"
-
-    #     incl_source_statements = [
-    #         f"otypes={source}" for source in self.incl_simbad_sources
-    #     ]
-    #     incl = f"({' | '.join(incl_source_statements)})"
-
-    #     # excl_source_statements = [
-    #     #     f"otypes!={source}" for source in self.excl_simbad_sources
-    #     # ]
-    #     # excl = f"({combine_Simbad_statements(excl_source_statements,linker='&')})"
-
-    #     redshift = f"redshift < {self.redshift_UL}"
-    #     if coordinate_criteria:
-    #         final_statement = " & ".join([coords, incl, redshift])
-    #     else:
-    #         final_statement = " & ".join([incl, redshift])
-    #     return final_statement
-
-    # def searchSimbad(
-    #     self, criteria_statement: str = None, coordinate_criteria: bool = False
-    # ) -> Table:
-    #     customSimbad = Simbad()
-    #     customSimbad.remove_votable_fields("coordinates")
-    #     customSimbad.add_votable_fields(
-    #         "ra(d;A;ICRS;J2000)", "dec(d;D;ICRS;J2000)", "otype", "z_value"
-    #     )
-    #     if not criteria_statement:
-    #         criteria_statement = self.constructSimbadCriteria(coordinate_criteria)
-
-    #     search_results = customSimbad.query_criteria(criteria_statement)
-    #     return search_results
-
 
 def in_which_container(item, containers: list[set]):
     sets = [set(c) for c in containers]
@@ -481,12 +411,15 @@ def getDataStores():
 def main():
     print("Loading mplets")
     with open("testing/pickles/mplets.pkl", "rb") as f:
-        mplets = dill.load(f)
+        mplets: Multiplets = dill.load(f)
 
     print("Got mplets, getting datastores.")
     datastores = getDataStores()
     print("Creating reduced dataset")
     mplets.createReduced()
+    print(
+        f"unique obs ids in reduced dataset: {len(np.unique(mplets.reduced['OBS_ID'].data))}"
+    )
     print("Adding local background rate to mplets.reduced")
     mplets.addLocalBackgroundRate(datastores)
 
@@ -541,6 +474,14 @@ def setup_mplets():
 
     tevcat = TeVCat()
     mplets.searchTeVCat(tevcat.sources)
+
+    datastores = getDataStores()
+    ds_mplet_indices = [
+        in_which_container(id, containers=[ds.obs_ids for ds in datastores])
+        for id in tqdm(mplets.table["OBS_ID"].data)
+    ]
+
+    mplets.table["DS_INDEX"] = ds_mplet_indices
 
     with open("testing/pickles/mplets.pkl", "wb") as f:
         dill.dump(mplets, f)
