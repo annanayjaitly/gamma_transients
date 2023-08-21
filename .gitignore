@@ -1,6 +1,6 @@
 .vscode
 testing/figures
-testing/pickles
+testing/pkl_jugs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
