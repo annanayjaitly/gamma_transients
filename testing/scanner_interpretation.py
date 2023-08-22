@@ -326,7 +326,31 @@ class Multiplets:
     def setReduced(self, reduced: Table):
         self.reduced = reduced
 
-    # def calcRoughSignificance(self)
+    def addRMS(self):
+        self.table["ANGULAR_MEASURE_DEG"] = [
+            np.mean(
+                sphere_dist(row["RA"], row["DEC"], row["MEDIAN_RA"], row["MEDIAN_DEC"])
+            )
+            for row in self.table
+        ]
+
+    def addLambdaRatioSignificace(self):
+        if ("BKG_DT_LAMBDA" not in self.reduced.colnames) or (
+            "MPLET_DT_LAMBDA" not in self.reduced.colnames
+        ):
+            self.addLocalBackgroundRate()
+
+        NormalizedLambda = (
+            self.reduced["Nmax"]
+            * self.reduced["BKG_DT_LAMBDA"]
+            / self.reduced["MPLET_DT_LAMBDA"]
+        )
+
+        self.reduced["LAMBDA_RATIO_SIGNIFICANCE"] = (
+            np.ones_like(NormalizedLambda) - np.sum()
+        )
+        """" UNFISNISHED BUSINESS """
+
     def addLocalBackgroundRate(
         self, datastores: list[DataStore], radius_deg: float = 0.1, navpath: str = None
     ):
@@ -343,11 +367,13 @@ class Multiplets:
             blockPrint()
             observation_per_ds = [
                 ds.get_observations(
-                    np.unique(self.reduced["OBS_ID"].data),
-                    skip_missing=True,
+                    np.unique(
+                        self.reduced[navigation_table["DS_INDEX"] == i]["OBS_ID"].data
+                    ),
+                    skip_missing=False,
                     required_irf="all-optional",
                 )
-                for ds in datastores
+                for i, ds in enumerate(datastores)
             ]
             enablePrint()
             print("Got observations")
@@ -375,7 +401,7 @@ class Multiplets:
                     {int(obs.ids[index]): index for index in range(len(obs))}
                 )
 
-            with open("testing/pickles/obs_id_to_index_per_ds_dict.pkl", "wb") as f:
+            with open("testing/pkl_jugs/obs_id_to_index_per_ds_dict.pkl", "wb") as f:
                 dill.dump(obs_id_to_index_per_ds, f)
 
             print("Building navigation table")
@@ -398,112 +424,25 @@ class Multiplets:
             )
             navigation_table.add_column(temp)
 
-            with open("testing/pickles/navigationtable.pkl", "wb") as f:
+            with open("testing/pkl_jugs/navigationtable.pkl", "wb") as f:
                 dill.dump(navigation_table, f)
-
-        """
-        =========================
-        Getting the photon rates
-        =========================
-        """
-        print("Getting photon rates.")
-        expon_fit_parameters = []
-        # error_counter = 0
-        # for row in tqdm(navigation_table):
-        #     obs = observation_per_ds[row["DS_INDEX"]][int(row["OBS_INDEX_WITHIN_DS"])]
-        #     run_distances = sphere_dist(
-        #         obs.events.table["RA"].data,
-        #         obs.events.table["DEC"].data,
-        #         self.reduced[row["MPLET_INDEX"]]["MEDIAN_RA"],
-        #         self.reduced[row["MPLET_INDEX"]]["MEDIAN_DEC"],
-        #     )
-        #     #     # expon_fit_parameters.append(
-        #     #     #     len(obs.events.table[run_distances < radius_deg])
-        #     #     #     / obs.obs_info["LIVETIME"]
-        #     #     # )
-        #     try:
-        #         parameters = expon.fit(
-        #             np.diff(
-        #                 np.sort(obs.events.table[run_distances < radius_deg]["TIME"])
-        #             )
-        #         )
-        #     except ValueError:
-        #         print(f"Empty array around the multiplet for OBS_ID {obs.obs_id}")
-        #         parameters = (np.nan, np.nan)
-        #         error_counter += 1
-        #     expon_fit_parameters.append(parameters)
-        # self.reduced["LOCAL_BKG_PHOT_DT_EXPON_FIT"] = expon_fit_parameters
-
-        # print(f"Getting mplet median right ascensions")
-        # MPLET_MEDIAN_RA = [
-        #     self.reduced[row["MPLET_INDEX"]]["MEDIAN_RA"]
-        #     for row in tqdm(navigation_table)
-        # ]
-        # print(f"Getting mplet median declinations")
-        # MPLET_MEDIAN_DEC = [
-        #     self.reduced[row["MPLET_INDEX"]]["MEDIAN_DEC"]
-        #     for row in tqdm(navigation_table)
-        # ]
-        # print(f"Getting flattened observations")
-        # OBSERVATIONS_FLAT = [
-        #     observation_per_ds[row["DS_INDEX"]][int(row["OBS_INDEX_WITHIN_DS"])]
-        #     for row in tqdm(navigation_table)
-        # ]
-
-        # print("Making rough masks")
-        # rough_mask = [obs.event.table["RA"] < ]
-
-        # print("Getting run ra")
-        # RA = [obs.events.table["RA"] for obs in tqdm(OBSERVATIONS_FLAT)]
-        # print("Getting run dec")
-        # DEC = [obs.events.table["DEC"] for obs in tqdm(OBSERVATIONS_FLAT)]
-        # print("Getting run arrival times")
-        # TIME = [obs.events.table["TIME"] for obs in tqdm(OBSERVATIONS_FLAT)]
-
-        # # for row in tqdm(navigation_table):
-        # #     obs = observation_per_ds[row["DS_INDEX"]][int(row["OBS_INDEX_WITHIN_DS"])]
-        # #     RA.append(obs.events.table["RA"].data)
-        # #     DEC.append(obs.events.table["DEC"].data)
-        # #     MPLET_MEDIAN_RA.append(self.reduced[row["MPLET_INDEX"]]["MEDIAN_RA"])
-        # #     MPLET_MEDIAN_DEC.append(self.reduced[row["MPLET_INDEX"]]["MEDIAN_DEC"])
-        # print("Got cf input arrays")
-
-        # from os import cpu_count
-
-        # print("Multiprocessing angular distances of run photons to mplet")
-        # with cf.ProcessPoolExecutor(int(cpu_count() / 4)) as executor:
-        #     future_rundistances = [
-        #         executor.submit(sphere_dist, ra, dec, medra, meddec)
-        #         for ra, dec, medra, meddec in zip(
-        #             RA, DEC, MPLET_MEDIAN_RA, MPLET_MEDIAN_DEC
-        #         )
-        #     ]
-        # print("Finished multiprocessing distances.")
-        # distances = [future.result() for future in future_rundistances]
-        # local_dt = [
-        #     np.diff(np.sort(TIME[rd < radius_deg]))
-        #     for obs, rd in zip(OBSERVATIONS_FLAT, distances)
-        # ]
-        # print("Multiprocessing expon fitting")
-        # with cf.ProcessPoolExecutor(int(cpu_count() / 4)) as executor:
-        #     future_fitparams = [executor.submit(expon.fit, data) for data in local_dt]
-
-        # print("Finished fitting dt.")
-        # for future in future_fitparams:
-        #     try:
-        #         result = future.result()
-        #     except Exception as e:
-        #         print(f"Error: {e}")
-        #         result = (np.nan, np.nan)
-        #     expon_fit_parameters.append(result)
 
         from os import cpu_count
 
-        workercount = int(cpu_count() / 4)
+        workercount = int(cpu_count() / 3)
+
+        """
+        ==============
+        BKG EXPON FIT
+        ==============
+        """
+        print("Getting photon rates.")
+        expon_fit_parameters = []
+
         with cf.ProcessPoolExecutor(workercount) as ex:
             future_fitparams = [
                 ex.submit(
-                    worker,
+                    run_expon_fit_worker,
                     observation_per_ds[row["DS_INDEX"]][
                         int(row["OBS_INDEX_WITHIN_DS"])
                     ],
@@ -512,23 +451,57 @@ class Multiplets:
                 )
                 for row in navigation_table
             ]
-        for future in future_fitparams:
+        print("Finalising run bkg fit futures")
+        for future in tqdm(future_fitparams):
+            try:
+                result = 1.0 / future.result()[1]  # lambda = 1/scale, loc fixed at zero
+            except Exception as e:
+                print(f"Error: {e}")
+                result = np.nan
+            expon_fit_parameters.append(result)
+
+        with open("testing/pkl_jugs/run_expon_fit_params.pkl", "wb") as f:
+            dill.dump(expon_fit_parameters, f)
+
+        self.reduced["BKG_DT_LAMBDA"] = expon_fit_parameters
+
+        """
+        ==============
+        SIGNAL EXPON FIT
+        ==============
+        """
+        print("Starting mplet expon fit")
+        mplet_expon_fit_parameters = []
+        with cf.ProcessPoolExecutor(workercount) as ex:
+            future_fitparams = [
+                ex.submit(expon.fit, np.asarray(row["TIME"]).astype(int), floc=0.0)
+                for row in self.reduced
+            ]
+        print("Finalising mplet dt fit futures")
+        for future in tqdm(future_fitparams):
             try:
                 result = future.result()
             except Exception as e:
                 print(f"Error: {e}")
                 result = (np.nan, np.nan)
-            expon_fit_parameters.append(result)
+            mplet_expon_fit_parameters.append(result)
 
-        self.reduced["LOCAL_BKG_PHOT_DT_EXPON_FIT"] = expon_fit_parameters
+        print("Dumping.")
 
-        with open("testing/pickles/reduced_with_bkg.pkl", "wb") as f:
-            dill.dump(self.reduced, f)
+        with open("testing/pkl_jugs/mplet_expon_fit_params.pkl", "wb") as f:
+            dill.dump(mplet_expon_fit_parameters, f)
 
-        # return error_counter
+        self.reduced["MPLET_DT_LAMBDA"] = mplet_expon_fit_parameters
 
 
-def worker(obs: Observation, medra: float, meddec: float, radius_deg=0.1):
+# def mplet_expon_fit_worker(arrival_times: np.array):
+#     mplet_parameters = expon.fit(arrival_times)
+#     return mplet_parameters
+
+# def local_mplet_sim()
+
+
+def run_expon_fit_worker(obs: Observation, medra: float, meddec: float, radius_deg=0.1):
     run_distances = sphere_dist(
         obs.events.table["RA"].data,
         obs.events.table["DEC"].data,
@@ -536,11 +509,11 @@ def worker(obs: Observation, medra: float, meddec: float, radius_deg=0.1):
         meddec,
     )
 
-    parameters = expon.fit(
-        np.diff(np.sort(obs.events.table[run_distances < radius_deg]["TIME"]))
+    run_parameters = expon.fit(
+        np.diff(np.sort(obs.events.table[run_distances < radius_deg]["TIME"])), floc=0
     )
 
-    return parameters
+    return run_parameters
 
 
 def in_which_container(item, containers: list[set]):
@@ -560,7 +533,7 @@ def getDataStores():
 
 def main():
     print("Loading mplets")
-    with open("testing/pickles/mplets.pkl", "rb") as f:
+    with open("testing/pkl_jugs/mplets.pkl", "rb") as f:
         mplets: Multiplets = dill.load(f)
 
     print("Got mplets, getting datastores.")
@@ -571,10 +544,14 @@ def main():
         f"unique obs ids in reduced dataset: {len(np.unique(mplets.reduced['OBS_ID'].data))}"
     )
     print("Adding local background rate to mplets.reduced")
-    ec = mplets.addLocalBackgroundRate(
-        datastores, navpath="testing/pickles/navigationtable.pkl"
+    mplets.addLocalBackgroundRate(
+        datastores, navpath="testing/pkl_jugs/navigationtable.pkl"
     )
-    print(f"error counter: {ec} out of ~25k")
+
+    ## estimation based on poisson
+    ## estimation based on simulation, maybe incorportate in addLocalBackgroundRate since you have the observations there
+    with open("testing/pkl_jugs/reduced_with_bkg.pkl", "wb") as f:
+        dill.dump(mplets.reduced, f)
 
     # fig = figure.Figure()
     # ax = fig.add_subplot()
@@ -635,8 +612,9 @@ def setup_mplets():
     ]
 
     mplets.table["DS_INDEX"] = ds_mplet_indices
+    mplets.addRMS()
 
-    with open("testing/pickles/mplets.pkl", "wb") as f:
+    with open("testing/pkl_jugs/mplets.pkl", "wb") as f:
         dill.dump(mplets, f)
 
 
@@ -694,5 +672,5 @@ if __name__ == "__main__":
 
     if generate_new_mplets:
         setup_mplets()
-
-    main()
+    else:
+        main()
