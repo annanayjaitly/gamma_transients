@@ -4,6 +4,7 @@ from astropy.table import Table, Column, Row
 from astropy.coordinates import SkyCoord
 from scipy.spatial import KDTree
 from scipy.stats import expon
+from scipy.special import factorial
 import numpy as np
 from tevcat import Source
 from matplotlib import figure, axes, colors
@@ -338,20 +339,31 @@ class Multiplets:
         if ("BKG_DT_LAMBDA" not in self.reduced.colnames) or (
             "MPLET_DT_LAMBDA" not in self.reduced.colnames
         ):
-            self.addLocalBackgroundRate()
+            print("Haven't found exponential fit parameters, will now start fitting.")
+            self.addExponentialDtFits(
+                getDataStores(), navpath="testing/pkl_jugs/navigationtable.pkl"
+            )
 
         NormalizedLambda = (
             self.reduced["Nmax"]
             * self.reduced["BKG_DT_LAMBDA"]
+            / 1e9
             / self.reduced["MPLET_DT_LAMBDA"]
         )
-
-        self.reduced["LAMBDA_RATIO_SIGNIFICANCE"] = (
-            np.ones_like(NormalizedLambda) - np.sum()
+        self.reduced["LAMBDA_RATIO_SIGNIFICANCE"] = np.ones_like(
+            NormalizedLambda
+        ) - np.asarray(
+            [
+                np.sum(
+                    np.power(lamb, np.arange(self.reduced[i]["Nmax"]))
+                    * np.exp(-lamb)
+                    / factorial(np.arange(self.reduced[i]["Nmax"])),
+                )
+                for i, lamb in enumerate(NormalizedLambda.data)
+            ]
         )
-        """" UNFISNISHED BUSINESS """
 
-    def addLocalBackgroundRate(
+    def addExponentialDtFits(
         self, datastores: list[DataStore], radius_deg: float = 0.1, navpath: str = None
     ):
         """
@@ -460,8 +472,8 @@ class Multiplets:
                 result = np.nan
             expon_fit_parameters.append(result)
 
-        with open("testing/pkl_jugs/run_expon_fit_params.pkl", "wb") as f:
-            dill.dump(expon_fit_parameters, f)
+        # with open("testing/pkl_jugs/run_expon_fit_params.pkl", "wb") as f:
+        # dill.dump(expon_fit_parameters, f)
 
         self.reduced["BKG_DT_LAMBDA"] = expon_fit_parameters
 
@@ -474,22 +486,26 @@ class Multiplets:
         mplet_expon_fit_parameters = []
         with cf.ProcessPoolExecutor(workercount) as ex:
             future_fitparams = [
-                ex.submit(expon.fit, np.asarray(row["TIME"]).astype(int), floc=0.0)
+                ex.submit(
+                    expon.fit,
+                    np.diff(np.sort(np.asarray(row["TIME"]).astype(int))),
+                    floc=0.0,
+                )
                 for row in self.reduced
             ]
         print("Finalising mplet dt fit futures")
         for future in tqdm(future_fitparams):
             try:
-                result = future.result()
+                result = 1.0 / future.result()[1]
             except Exception as e:
                 print(f"Error: {e}")
-                result = (np.nan, np.nan)
+                result = np.nan
             mplet_expon_fit_parameters.append(result)
 
         print("Dumping.")
 
-        with open("testing/pkl_jugs/mplet_expon_fit_params.pkl", "wb") as f:
-            dill.dump(mplet_expon_fit_parameters, f)
+        # with open("testing/pkl_jugs/mplet_expon_fit_params.pkl", "wb") as f:
+        # dill.dump(mplet_expon_fit_parameters, f)
 
         self.reduced["MPLET_DT_LAMBDA"] = mplet_expon_fit_parameters
 
@@ -531,7 +547,7 @@ def getDataStores():
     return [hess1_datastore, hess1u_datastore]
 
 
-def main():
+def main_fits():
     print("Loading mplets")
     with open("testing/pkl_jugs/mplets.pkl", "rb") as f:
         mplets: Multiplets = dill.load(f)
@@ -544,7 +560,7 @@ def main():
         f"unique obs ids in reduced dataset: {len(np.unique(mplets.reduced['OBS_ID'].data))}"
     )
     print("Adding local background rate to mplets.reduced")
-    mplets.addLocalBackgroundRate(
+    mplets.addExponentialDtFits(
         datastores, navpath="testing/pkl_jugs/navigationtable.pkl"
     )
 
@@ -553,14 +569,39 @@ def main():
     with open("testing/pkl_jugs/reduced_with_bkg.pkl", "wb") as f:
         dill.dump(mplets.reduced, f)
 
-    # fig = figure.Figure()
-    # ax = fig.add_subplot()
-    # ax.hist(mplets.reduced["LOCAL_BKG_PHOT_RATE"], bins="fd", histtype="step")
+    mplets.addLambdaRatioSignificace()
+    with open("testing/pkl_jugs/reduced_with_significance.pkl", "wb") as f:
+        dill.dump(mplets.reduced, f)
 
-    # ax.set_xlabel(r"Local photon background rate [$\mathrm{s}^{-1}$]")
-    # ax.set_ylabel(r"Counts")
 
-    # fig.savefig("testing/figures/combined/reduced_phot_bkg_rate.png", facecolor="white")
+def main_signifiance():
+    print("Loading mplets")
+    with open("testing/pkl_jugs/mplets.pkl", "rb") as f:
+        mplets: Multiplets = dill.load(f)
+
+    with open("testing/pkl_jugs/reduced_with_bkg.pkl", "rb") as f:
+        mplets.setReduced(dill.load(f))
+        print(f"Reduced length: {len(mplets.reduced)}")
+
+    mplets.addLambdaRatioSignificace()
+
+    print("dumping")
+    with open("testing/pkl_jugs/reduced_with_significance.pkl", "wb") as f:
+        dill.dump(mplets.reduced, f)
+
+
+def main_fixparam():
+    with open("testing/pkl_jugs/reduced_with_bkg.pkl", "rb") as f:
+        reduced: Table = dill.load(f)
+
+    mplet_fitparams = reduced["MPLET_DT_LAMBDA"]
+    print(f"mplet fitparams sample {mplet_fitparams[0]}")
+
+    lamb = [1.0 / par[1] for par in mplet_fitparams]
+    reduced.remove_column("MPLET_DT_LAMBDA")
+    reduced["MPLET_DT_LAMBDA"] = lamb
+    with open("testing/pkl_jugs/reduced_with_bkg.pkl", "wb") as f:
+        dill.dump(reduced, f)
 
 
 def setup_mplets():
@@ -673,4 +714,4 @@ if __name__ == "__main__":
     if generate_new_mplets:
         setup_mplets()
     else:
-        main()
+        main_fits()
