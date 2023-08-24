@@ -450,6 +450,7 @@ class Multiplets:
         """
         print("Getting photon rates.")
         expon_fit_parameters = []
+        bkg_photon_count = []
 
         with cf.ProcessPoolExecutor(workercount) as ex:
             future_fitparams = [
@@ -458,6 +459,7 @@ class Multiplets:
                     observation_per_ds[row["DS_INDEX"]][
                         int(row["OBS_INDEX_WITHIN_DS"])
                     ],
+                    self.reduced[row["MPLET_INDEX"]]["ID"],
                     self.reduced[row["MPLET_INDEX"]]["MEDIAN_RA"],
                     self.reduced[row["MPLET_INDEX"]]["MEDIAN_DEC"],
                 )
@@ -466,16 +468,19 @@ class Multiplets:
         print("Finalising run bkg fit futures")
         for future in tqdm(future_fitparams):
             try:
-                result = 1.0 / future.result()[1]  # lambda = 1/scale, loc fixed at zero
+                result, nphot = future.result()
             except Exception as e:
                 print(f"Error: {e}")
                 result = np.nan
+                nphot = np.nan
             expon_fit_parameters.append(result)
+            bkg_photon_count.append(nphot)
 
         # with open("testing/pkl_jugs/run_expon_fit_params.pkl", "wb") as f:
         # dill.dump(expon_fit_parameters, f)
 
         self.reduced["BKG_DT_LAMBDA"] = expon_fit_parameters
+        self.reduced["BKG_PHOTONS"] = bkg_photon_count
 
         """
         ==============
@@ -502,8 +507,7 @@ class Multiplets:
                 result = np.nan
             mplet_expon_fit_parameters.append(result)
 
-        print("Dumping.")
-
+        # print("Dumping.")
         # with open("testing/pkl_jugs/mplet_expon_fit_params.pkl", "wb") as f:
         # dill.dump(mplet_expon_fit_parameters, f)
 
@@ -517,7 +521,32 @@ class Multiplets:
 # def local_mplet_sim()
 
 
-def run_expon_fit_worker(obs: Observation, medra: float, meddec: float, radius_deg=0.1):
+def run_expon_fit_worker(
+    obs: Observation, mplet_id: tuple[int], medra: float, meddec: float, radius_deg=0.1
+):
+    """ "
+    Worker function for multiprocessing that fits the exponential dt distribution local to the multiplet.
+
+    Parameters
+    ----------
+    obs: Observation
+        The observation where the multiplet is present
+
+    mplet_id: tuple[int]
+        The photon id's of the multiplet members, masked in the fit.
+
+    etc
+
+    Returns
+    -------
+
+    run_parameters: tuple[float]
+        loc,scale of the exponential distribution. Loc has been fixed to zero.
+
+    n_phot: float
+        Number of photons present in the region around the multiplet.
+
+    """
     run_distances = sphere_dist(
         obs.events.table["RA"].data,
         obs.events.table["DEC"].data,
@@ -525,11 +554,30 @@ def run_expon_fit_worker(obs: Observation, medra: float, meddec: float, radius_d
         meddec,
     )
 
+    on_region_mask = run_distances < radius_deg
+    signal_mask = ~np.isin(obs.events.table["EVENT_ID"], mplet_id)
+
+    bkg_photon_count = len(obs.events.table[on_region_mask * signal_mask])
+
+    if bkg_photon_count == 0:
+        return 0.0, bkg_photon_count  # no photons: rate==0
+    elif bkg_photon_count == 1:
+        return bkg_photon_count / obs.obs_info["LIVETIME"], bkg_photon_count
+
+    # dt fit exluced the multiplet
     run_parameters = expon.fit(
-        np.diff(np.sort(obs.events.table[run_distances < radius_deg]["TIME"])), floc=0
+        np.diff(
+            np.sort(
+                obs.events.table[
+                    (run_distances < radius_deg)
+                    * ~np.isin(obs.events.table["EVENT_ID"], mplet_id)
+                ]["TIME"]
+            )
+        ),
+        floc=0,
     )
 
-    return run_parameters
+    return 1.0 / run_parameters[1], bkg_photon_count
 
 
 def in_which_container(item, containers: list[set]):
@@ -566,8 +614,8 @@ def main_fits():
 
     ## estimation based on poisson
     ## estimation based on simulation, maybe incorportate in addLocalBackgroundRate since you have the observations there
-    with open("testing/pkl_jugs/reduced_with_bkg.pkl", "wb") as f:
-        dill.dump(mplets.reduced, f)
+    # with open("testing/pkl_jugs/reduced_with_bkg.pkl", "wb") as f:
+    #     dill.dump(mplets.reduced, f)
 
     mplets.addLambdaRatioSignificace()
     with open("testing/pkl_jugs/reduced_with_significance.pkl", "wb") as f:

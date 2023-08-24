@@ -1,1 +1,0 @@
-time gt_scanner --data-store $HESS1U --dt 3000000000 --da 0.2  --Nmin 2 --Nmax 2 --galb1 -90 --galb2 -85 --output "$USERMASSSTORAGE2/full_scanner_survey/test" --dr 360.0 &> "$USERMASSSTORAGE2/full_scanner_survey/logs/testlog.txt" --overwrite
