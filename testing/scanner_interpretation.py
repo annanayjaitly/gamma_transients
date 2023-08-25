@@ -20,16 +20,6 @@ import concurrent.futures as cf
 import sys, os
 
 
-# Disable
-def blockPrint():
-    sys.stdout = open(os.devnull, "w")
-
-
-# Restore
-def enablePrint():
-    sys.stdout = sys.__stdout__
-
-
 def sphere_dist(ra1, dec1, ra2, dec2):
     """
     Haversine formula for angular distance on a sphere: more stable at poles.
@@ -376,7 +366,6 @@ class Multiplets:
                 navigation_table = dill.load(f)
             print(f"Loaded navtable from {navpath}.")
             print("Getting ds observations.")
-            blockPrint()
             observation_per_ds = [
                 ds.get_observations(
                     np.unique(
@@ -387,7 +376,6 @@ class Multiplets:
                 )
                 for i, ds in enumerate(datastores)
             ]
-            enablePrint()
             print("Got observations")
 
         except TypeError:
