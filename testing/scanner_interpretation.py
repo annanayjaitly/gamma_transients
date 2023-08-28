@@ -1,5 +1,6 @@
 # from gamma_transients import core
 import dill
+from os import cpu_count
 from astropy.table import Table, Column, Row
 from astropy.coordinates import SkyCoord
 from scipy.spatial import KDTree
@@ -196,7 +197,7 @@ class Multiplets:
 
     """
 
-    def __init__(self, path: str, simbad_sources_init: bool = True) -> None:
+    def __init__(self, path: str) -> None:
         self.paths = [path]
         self.loadMpletsBare(path)
 
@@ -311,11 +312,55 @@ class Multiplets:
         for name in ["ID", "RA", "DEC", "TIME", "ENERGY"]:
             objectifyColumn(self.table, name)
 
-    def __getitem__(self, index):
-        return self.table[index]
-
     def setReduced(self, reduced: Table):
         self.reduced = reduced
+
+
+class Reduced:
+    def __init__(self, path: str) -> None:
+        with open(path, "rb") as f:
+            self.reduced = dill.load(f)
+
+    def loadMetadata(self, navpath: str = None):
+        self.datastores = getDataStores()
+        self.observation_per_ds = [
+            ds.get_observations(
+                np.unique(self.reduced["OBS_ID"].data[self.reduced["DS_INDEX"] == i]),
+                required_irf="all-optional",
+            )
+            for i, ds in enumerate(self.datastores)
+        ]
+        try:
+            with open(navpath, "rb") as f:
+                self.navtable = dill.load(f)
+        except:
+            self.navtable = self.makeNavigationTable()
+
+    def makeNavigationTable(self):
+        obs_id_to_index_per_ds = dict()
+        for obs in self.observation_per_ds:
+            obs_id_to_index_per_ds.update(
+                {int(obs.ids[index]): index for index in range(len(obs))}
+            )
+
+        print("Building navigation table")
+        navigation_table = Table(
+            [
+                range(len(self.reduced)),
+                self.reduced["OBS_ID"],
+                self.reduced["DS_INDEX"],
+            ],
+            names=("MPLET_INDEX", "OBS_ID", "DS_INDEX"),
+            dtype=[int, int, int],
+        )
+        print("completing navigation table")
+        temp = Column(
+            name="OBS_INDEX_WITHIN_DS",
+            data=list(map(obs_id_to_index_per_ds.get, navigation_table["OBS_ID"].data)),
+            dtype=int,
+        )
+        navigation_table.add_column(temp)
+        return navigation_table
 
     def addRMS(self):
         self.table["ANGULAR_MEASURE_DEG"] = [
@@ -353,82 +398,7 @@ class Multiplets:
             ]
         )
 
-    def addExponentialDtFits(
-        self, datastores: list[DataStore], radius_deg: float = 0.1, navpath: str = None
-    ):
-        """
-        ==============================
-        Creating the navigation table
-        ==============================
-        """
-        try:
-            with open(navpath, "rb") as f:
-                navigation_table = dill.load(f)
-            print(f"Loaded navtable from {navpath}.")
-            print("Getting ds observations.")
-            observation_per_ds = [
-                ds.get_observations(
-                    np.unique(
-                        self.reduced[navigation_table["DS_INDEX"] == i]["OBS_ID"].data
-                    ),
-                    skip_missing=False,
-                    required_irf="all-optional",
-                )
-                for i, ds in enumerate(datastores)
-            ]
-            print("Got observations")
-
-        except TypeError:
-            print("Not loading navtable.")
-
-            print("Getting ds observations.")
-
-            observation_per_ds = [
-                ds.get_observations(
-                    np.unique(
-                        self.reduced["OBS_ID"].data[self.reduced["DS_INDEX"] == i]
-                    ),
-                    required_irf="all-optional",
-                )
-                for i, ds in enumerate(datastores)
-            ]
-            print("Got observations")
-
-            # mapping obs id to index within the relevant datastore. Note that this is non-injective
-            obs_id_to_index_per_ds = dict()
-            for obs in observation_per_ds:
-                obs_id_to_index_per_ds.update(
-                    {int(obs.ids[index]): index for index in range(len(obs))}
-                )
-
-            with open("testing/pkl_jugs/obs_id_to_index_per_ds_dict.pkl", "wb") as f:
-                dill.dump(obs_id_to_index_per_ds, f)
-
-            print("Building navigation table")
-            navigation_table = Table(
-                [
-                    range(len(self.reduced)),
-                    self.reduced["OBS_ID"],
-                    self.reduced["DS_INDEX"],
-                ],
-                names=("MPLET_INDEX", "OBS_ID", "DS_INDEX"),
-                dtype=[int, int, int],
-            )
-            print("completing navigation table")
-            temp = Column(
-                name="OBS_INDEX_WITHIN_DS",
-                data=list(
-                    map(obs_id_to_index_per_ds.get, navigation_table["OBS_ID"].data)
-                ),
-                dtype=int,
-            )
-            navigation_table.add_column(temp)
-
-            with open("testing/pkl_jugs/navigationtable.pkl", "wb") as f:
-                dill.dump(navigation_table, f)
-
-        from os import cpu_count
-
+    def addExponentialDtFits(self, radius_deg: float = 0.1, navpath: str = None):
         workercount = int(cpu_count() / 3)
 
         """
@@ -444,14 +414,14 @@ class Multiplets:
             future_fitparams = [
                 ex.submit(
                     run_expon_fit_worker,
-                    observation_per_ds[row["DS_INDEX"]][
+                    self.observation_per_ds[row["DS_INDEX"]][
                         int(row["OBS_INDEX_WITHIN_DS"])
                     ],
                     self.reduced[row["MPLET_INDEX"]]["ID"],
                     self.reduced[row["MPLET_INDEX"]]["MEDIAN_RA"],
                     self.reduced[row["MPLET_INDEX"]]["MEDIAN_DEC"],
                 )
-                for row in navigation_table
+                for row in self.navtable
             ]
         print("Finalising run bkg fit futures")
         for future in tqdm(future_fitparams):
@@ -463,9 +433,6 @@ class Multiplets:
                 nphot = np.nan
             expon_fit_parameters.append(result)
             bkg_photon_count.append(nphot)
-
-        # with open("testing/pkl_jugs/run_expon_fit_params.pkl", "wb") as f:
-        # dill.dump(expon_fit_parameters, f)
 
         self.reduced["BKG_DT_LAMBDA"] = expon_fit_parameters
         self.reduced["BKG_PHOTONS"] = bkg_photon_count
@@ -495,11 +462,46 @@ class Multiplets:
                 result = np.nan
             mplet_expon_fit_parameters.append(result)
 
-        # print("Dumping.")
-        # with open("testing/pkl_jugs/mplet_expon_fit_params.pkl", "wb") as f:
-        # dill.dump(mplet_expon_fit_parameters, f)
-
         self.reduced["MPLET_DT_LAMBDA"] = mplet_expon_fit_parameters
+
+    def addDistanceToPNT(self):
+        distances = []
+
+        workercount = int(cpu_count() / 3)
+
+        with cf.ProcessPoolExecutor(workercount) as ex:
+            future_distances = [
+                ex.submit(
+                    sphere_dist,
+                    self.reduced[row["MPLET_INDEX"]]["MEDIAN_RA"],
+                    self.reduced[row["MPLET_INDEX"]]["MEDIAN_DEC"],
+                    self.observation_per_ds[row["DS_INDEX"]][
+                        int(row["OBS_INDEX_WITHIN_DS"])
+                    ].obs_info["RA_PNT"],
+                    self.observation_per_ds[row["DS_INDEX"]][
+                        int(row["OBS_INDEX_WITHIN_DS"])
+                    ].obs_info["DEC_PNT"],
+                )
+                for row in tqdm(self.navtable)
+            ]
+        print("Finalising MPLET FOV DIST futures")
+        for future in tqdm(future_distances):
+            try:
+                result = future.result()
+            except Exception as e:
+                print(f"Error: {e}")
+                result = np.nan
+            distances.append(result)
+        self.reduced["PNT_DISTANCE"] = distances
+
+    def addZenith(self):
+        ## SUDDEN THOUGHT: compare with regular zenith distribution, maybe with the cumulative distributions // Smirnov test
+        self.reduced["ALT_PNT"] = [
+            self.observation_per_ds[row["DS_INDEX"]][
+                int(row["OBS_INDEX_WITHIN_DS"])
+            ].obs_info["ALT_PNT"]
+            for row in tqdm(self.navtab)
+        ]
 
 
 # def mplet_expon_fit_worker(arrival_times: np.array):
@@ -626,6 +628,25 @@ def main_signifiance():
         dill.dump(mplets.reduced, f)
 
 
+def main_pnt():
+    with open("testing/pkl_jugs/reduced_with_significance.pkl", "rb") as f:
+        reduced = dill.load(f)
+    with open("testing/pkl_jugs/navigationtable.pkl", "rb") as f:
+        navtab = dill.load(f)
+
+    ds = getDataStores()
+
+    getDistanceToPNT(reduced, ds, navtab)
+
+    print(reduced.colnames)
+    if "PNT_DISTANCE" in reduced.colnames:
+        print("ok")
+        with open("testing/pkl_jugs/reduced_with_dst.pkl", "wb") as f:
+            dill.dump(reduced, f)
+    else:
+        print("didnt work", reduced.colnames)
+
+
 def main_fixparam():
     with open("testing/pkl_jugs/reduced_with_bkg.pkl", "rb") as f:
         reduced: Table = dill.load(f)
@@ -750,4 +771,5 @@ if __name__ == "__main__":
     if generate_new_mplets:
         setup_mplets()
     else:
-        main_fits()
+        # main_fits()
+        main_pnt()
