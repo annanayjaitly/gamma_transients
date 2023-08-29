@@ -1,6 +1,8 @@
 .vscode
 testing/figures
 testing/pkl_jugs
+testing/mc_scanner
+secrets
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

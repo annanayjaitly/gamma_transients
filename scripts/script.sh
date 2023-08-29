@@ -1,0 +1,1 @@
+python ../scripts/mc_scanner_script.py -n dwarf -o "mc_scanner" -i "$HESS1" -s 1 --RA 283.775 --DEC -31.1833 --multi_N 3 --da-cut 0.2 --dt-max 3e9

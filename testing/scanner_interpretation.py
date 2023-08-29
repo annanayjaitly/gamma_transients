@@ -321,7 +321,7 @@ class Reduced:
         with open(path, "rb") as f:
             self.reduced = dill.load(f)
 
-    def loadMetadata(self, navpath: str = None):
+    def loadObservations(self):
         self.datastores = getDataStores()
         self.observation_per_ds = [
             ds.get_observations(
@@ -330,10 +330,13 @@ class Reduced:
             )
             for i, ds in enumerate(self.datastores)
         ]
+
+    def loadNavtable(self, navpath: str = None):
         try:
             with open(navpath, "rb") as f:
                 self.navtable = dill.load(f)
         except:
+            print("Navtab not found, making from scratch.")
             self.navtable = self.makeNavigationTable()
 
     def makeNavigationTable(self):
@@ -494,14 +497,16 @@ class Reduced:
             distances.append(result)
         self.reduced["PNT_DISTANCE"] = distances
 
-    def addZenith(self):
+    def addPNTAltitude(self):
         ## SUDDEN THOUGHT: compare with regular zenith distribution, maybe with the cumulative distributions // Smirnov test
-        self.reduced["ALT_PNT"] = [
-            self.observation_per_ds[row["DS_INDEX"]][
+        alt_pnt = []
+        for row in tqdm(self.navtable):
+            alt = self.observation_per_ds[row["DS_INDEX"]][
                 int(row["OBS_INDEX_WITHIN_DS"])
             ].obs_info["ALT_PNT"]
-            for row in tqdm(self.navtab)
-        ]
+            alt_pnt.append(alt)
+
+        self.reduced["ALT_PNT"] = alt_pnt
 
 
 # def mplet_expon_fit_worker(arrival_times: np.array):
@@ -628,25 +633,6 @@ def main_signifiance():
         dill.dump(mplets.reduced, f)
 
 
-def main_pnt():
-    with open("testing/pkl_jugs/reduced_with_significance.pkl", "rb") as f:
-        reduced = dill.load(f)
-    with open("testing/pkl_jugs/navigationtable.pkl", "rb") as f:
-        navtab = dill.load(f)
-
-    ds = getDataStores()
-
-    getDistanceToPNT(reduced, ds, navtab)
-
-    print(reduced.colnames)
-    if "PNT_DISTANCE" in reduced.colnames:
-        print("ok")
-        with open("testing/pkl_jugs/reduced_with_dst.pkl", "wb") as f:
-            dill.dump(reduced, f)
-    else:
-        print("didnt work", reduced.colnames)
-
-
 def main_fixparam():
     with open("testing/pkl_jugs/reduced_with_bkg.pkl", "rb") as f:
         reduced: Table = dill.load(f)
@@ -770,6 +756,3 @@ if __name__ == "__main__":
 
     if generate_new_mplets:
         setup_mplets()
-    else:
-        # main_fits()
-        main_pnt()
