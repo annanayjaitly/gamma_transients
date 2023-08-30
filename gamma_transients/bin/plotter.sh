@@ -1,1 +1,1 @@
-./gt_plotter_obsid --prefix "$USERMASSSTORAGE2/git/gamma_transients/testing/pkl_jugs/plotter_pval0" --data-store $HESS1U --single-run-analysis
+./gt_plotter_obsid --prefix "$USERMASSSTORAGE2/git/gamma_transients/testing/pkl_jugs/plotter_lowp" --data-store $HESS1U --single-run-analysis
