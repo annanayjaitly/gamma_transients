@@ -1,1 +1,1 @@
-python ../scripts/mc_scanner_script.py -n dwarf -o "mc_scanner" -i "$HESS1" -s 1 --RA 283.775 --DEC -31.1833 --multi_N 3 --da-cut 0.2 --dt-max 3e9
+python ../scripts/mc_scanner_script.py -n hbl -o "mc_scanner" -i "$HESS1" -s 1 --RA 0.363599987030068 --DEC -30.6275 --multi_N 3 --da-cut 0.2 --dt-max 3e9 --OBS_ID 35007

@@ -339,7 +339,9 @@ def multiplet_scanner_simulated_table(
 
             if len(multiplets_max) > 0:
                 for multiplet in multiplets_max:
-                    if Nmin <= len(multiplet) <= Nmax:
+                    if Nmin <= len(multiplet) and (
+                        (Nmax is None) or (len(multiplet) <= Nmax)
+                    ):
                         multiplet_table = Table(
                             rows=[
                                 [event.ra, event.dec, event.t] for event in multiplet

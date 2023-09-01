@@ -1,21 +1,29 @@
 # from gamma_transients import core
 import dill
 from os import cpu_count
-from astropy.table import Table, Column, Row
-from astropy.coordinates import SkyCoord
-from scipy.spatial import KDTree
-from scipy.stats import expon
-from scipy.special import factorial
-import numpy as np
-from tevcat import Source
-from matplotlib import figure, axes, colors
-import healpy as hp
-import pandas as pd
-import numexpr
-from gammapy.data import DataStore, Observation
 from tqdm import tqdm
 from collections import defaultdict
 import concurrent.futures as cf
+
+from astropy.table import Table, Column, Row
+from astropy.coordinates import SkyCoord
+import astropy.units as u
+
+from scipy.spatial import KDTree
+from scipy.stats import expon
+from scipy.special import factorial
+
+import numpy as np
+from matplotlib import figure, axes, colors
+import pandas as pd
+import numexpr
+
+from tevcat import Source
+import healpy as hp
+from gammapy.data import DataStore, Observation
+from gammapy.maps import WcsNDMap
+from gammapy.datasets import MapDataset
+
 
 # from astroquery.simbad import Simbad
 import sys, os
@@ -315,6 +323,34 @@ class Multiplets:
     def setReduced(self, reduced: Table):
         self.reduced = reduced
 
+    def addRMS(self):
+        # self.table["ANGULAR_MEASURE_DEG"] = [
+        #     np.mean(
+        #         sphere_dist(row["RA"], row["DEC"], row["MEDIAN_RA"], row["MEDIAN_DEC"])
+        #     )
+        #     for row in self.table
+        # ]
+        measure = []
+        workers = int(cpu_count() / 3)
+
+        with cf.ProcessPoolExecutor(workers) as ex:
+            future_rms = [
+                ex.submit(
+                    np.mean, row["RA"], row["DEC"], row["MEDIAN_RA"], row["MEDIAN_DEC"]
+                )
+                for row in tqdm(self.table)
+            ]
+        print("Finalising rms futures")
+        for future in tqdm(future_rms):
+            try:
+                result = future.result()
+            except Exception as e:
+                print(f"Error: {e}")
+                result = np.nan
+            measure.append(result)
+
+        self.table["ANGULAR_MEASURE_DEG"] = measure
+
 
 class Reduced:
     def __init__(self, path: str) -> None:
@@ -365,14 +401,6 @@ class Reduced:
         navigation_table.add_column(temp)
         return navigation_table
 
-    def addRMS(self):
-        self.table["ANGULAR_MEASURE_DEG"] = [
-            np.mean(
-                sphere_dist(row["RA"], row["DEC"], row["MEDIAN_RA"], row["MEDIAN_DEC"])
-            )
-            for row in self.table
-        ]
-
     def addLambdaRatioSignificace(self):
         if ("BKG_DT_LAMBDA" not in self.reduced.colnames) or (
             "MPLET_DT_LAMBDA" not in self.reduced.colnames
@@ -401,7 +429,7 @@ class Reduced:
             ]
         )
 
-    def addExponentialDtFits(self, radius_deg: float = 0.1, navpath: str = None):
+    def addExponentialDtFits(self, radius_deg: float = 0.1):
         workercount = int(cpu_count() / 3)
 
         """
@@ -497,7 +525,7 @@ class Reduced:
             distances.append(result)
         self.reduced["PNT_DISTANCE"] = distances
 
-    def addPNTAltitude(self):
+    def addPNTAltitude(self) -> None:
         ## SUDDEN THOUGHT: compare with regular zenith distribution, maybe with the cumulative distributions // Smirnov test
         alt_pnt = []
         for row in tqdm(self.navtable):
@@ -508,12 +536,55 @@ class Reduced:
 
         self.reduced["ALT_PNT"] = alt_pnt
 
+    def addExposureCorrectedP(self, exposure: WcsNDMap) -> None:
+        corrected_P = []
+        runcount = get_total_runcount(self.datastores)
+        with cf.ProcessPoolExecutor(int(cpu_count() / 3)) as ex:
+            future_expfactors = [
+                ex.sumit(get_bell_ratio(exposure, row["SkyCoord"]))
+                for row in tqdm(self.reduced)
+            ]
+        for future in future_expfactors:
+            try:
+                result = future.result()
+            except Exception as e:
+                print(f"Error: {e}")
+                result = np.nan
+            corrected_P.append(result * runcount / result)
 
-# def mplet_expon_fit_worker(arrival_times: np.array):
-#     mplet_parameters = expon.fit(arrival_times)
-#     return mplet_parameters
+        self.exposure["EXP_CORRECTED_P"] = corrected_P
 
-# def local_mplet_sim()
+
+def pxl_distance(i1: int, j1: int, i2: int, j2: int):
+    return np.sqrt(np.square(i1 - j1) + np.square(i2 - j2))
+
+
+def get_contained_indices(
+    Nh: int, Nv: int, coord=tuple[int], center: tuple[int] = None
+):
+    if not center:
+        center = (int(Nh / 2), int(Nv / 2))
+    x, y = np.meshgrid(np.arange(Nh), np.arange(Nv))
+    distances = np.sqrt(np.square(x - coord[0]) + np.square(y - coord[1]))
+    radius = pxl_distance(*center, *coord)
+
+    contained_indices = np.where(distances <= radius)
+    return contained_indices
+
+
+def get_bell_ratio(exposure: WcsNDMap, signal: SkyCoord):
+    spatial_exposure = exposure.sum_over_axes(keepdims=False)
+    contained_idx = get_contained_indices(*spatial_exposure.data.shape, signal)
+    normalization = np.sum(spatial_exposure.data)
+    contained_exposure = np.sum(spatial_exposure.get_by_idx(contained_exposure))
+    return 1 - contained_exposure / normalization
+
+
+def get_total_runcount(ds: list[DataStore]):
+    runcount = 0
+    for store in ds:
+        runcount += len(store.obs_ids)
+    return runcount
 
 
 def run_expon_fit_worker(
@@ -592,7 +663,7 @@ def getDataStores():
 
 def main_fits():
     print("Loading mplets")
-    with open("testing/pkl_jugs/mplets.pkl", "rb") as f:
+    with open("testing/pkl_jugs/n4/mplets.pkl", "rb") as f:
         mplets: Multiplets = dill.load(f)
 
     print("Got mplets, getting datastores.")
@@ -602,9 +673,13 @@ def main_fits():
     print(
         f"unique obs ids in reduced dataset: {len(np.unique(mplets.reduced['OBS_ID'].data))}"
     )
+
+    with open("testing/pkl_jugs/n4/reduced.pkl", "wb") as f:
+        dill.dump(mplets.reduced, f)
+
     print("Adding local background rate to mplets.reduced")
     mplets.addExponentialDtFits(
-        datastores, navpath="testing/pkl_jugs/navigationtable.pkl"
+        datastores, navpath="testing/pkl_jugs/n4/navigationtable.pkl"
     )
 
     ## estimation based on poisson
@@ -669,17 +744,22 @@ def setup_mplets():
     ]
     versions = ["hess1", "hess1u"]
     paths = [
-        f"/lustre/fs22/group/hess/user/wybouwt/full_scanner_survey/{version}/{band}"
+        f"/lustre/fs22/group/hess/user/wybouwt/full_scanner_survey/nmax4_da_increased/{version}/{band}"
         for band in bands
         for version in versions
     ]
     # mplets = scani.Multiplets(paths[0])
     # mplets.appendMultiplets(*[scani.Multiplets(path) for path in paths[1:]])
     mplet_list = [Multiplets(path) for path in paths]
+    Nmax_list = [np.unique(mplets.table["Nmax"].data) for mplets in mplet_list]
 
-    unicorns = [9, 18]
-    for j in unicorns:
-        mplet_list[j].objectifyColumns()
+    for i in range(len(Nmax_list)):
+        print(i, Nmax_list[i])
+
+    # unicorns = [9, 18]
+    # unicorns = [7, 16, 17, 24, 25, 32]
+    for mplet in mplet_list:
+        mplet.objectifyColumns()
 
     mplets = mplet_list[0]
     mplets.appendMultiplets(*mplet_list[1:])
@@ -698,8 +778,18 @@ def setup_mplets():
     mplets.table["DS_INDEX"] = ds_mplet_indices
     mplets.addRMS()
 
-    with open("testing/pkl_jugs/mplets.pkl", "wb") as f:
+    print("Dumping the mplets object.")
+    with open("testing/pkl_jugs/n4/mplets.pkl", "wb") as f:
         dill.dump(mplets, f)
+
+    print("Creating reduced dataset")
+    mplets.createReduced()
+    print(
+        f"unique obs ids in reduced dataset: {len(np.unique(mplets.reduced['OBS_ID'].data))}"
+    )
+    print("Dumping bare reduced")
+    with open("testing/pkl_jugs/n4/reduced_bare.pkl", "wb") as f:
+        dill.dump(mplets.reduced, f)
 
 
 def main_aitov(mplets):
@@ -752,7 +842,7 @@ def main_aitov(mplets):
 
 
 if __name__ == "__main__":
-    generate_new_mplets = False
+    generate_new_mplets = True
 
     if generate_new_mplets:
         setup_mplets()
