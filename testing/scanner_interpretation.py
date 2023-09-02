@@ -2,7 +2,6 @@
 import dill
 from os import cpu_count
 from tqdm import tqdm
-from collections import defaultdict
 import concurrent.futures as cf
 
 from astropy.table import Table, Column, Row
@@ -14,7 +13,7 @@ from scipy.stats import expon
 from scipy.special import factorial
 
 import numpy as np
-from matplotlib import figure, axes, colors
+from matplotlib import figure, axes
 import pandas as pd
 import numexpr
 
@@ -22,11 +21,6 @@ from tevcat import Source
 import healpy as hp
 from gammapy.data import DataStore, Observation
 from gammapy.maps import WcsNDMap
-from gammapy.datasets import MapDataset
-
-
-# from astroquery.simbad import Simbad
-import sys, os
 
 
 def sphere_dist(ra1, dec1, ra2, dec2):
@@ -61,7 +55,7 @@ def sphere_dist(ra1, dec1, ra2, dec2):
 
 
 @np.vectorize
-def convert_angle(angle):
+def convert_angle(angle: float) -> float:
     """
     Convert angle from 0 to 360 to -180 to 180
 
@@ -125,7 +119,9 @@ def radec_to_SimbadCircle(ra: float, dec: float, radius_deg=0.2) -> str:
     return f"region(circle,{ra} {prefix}{dec},{radius_deg}d)"
 
 
-def cat2hpx(lon, lat, nside, radec=True):
+def cat2hpx(
+    lon: np.ndarray, lat: np.ndarray, nside: int, radec: bool = True
+) -> np.ndarray:
     """
     Convert a catalogue to a HEALPix map of number counts per resolution
     element. (https://stackoverflow.com/a/50495134)
@@ -179,29 +175,55 @@ class Multiplets:
 
     Attributes
     ----------
-    path : str
-        Path to the multiplets file
+    paths : list[str]
+        List of paths to the multiplet folders
 
-    table : pandas.DataFrame
-        Table containing the multiplets
+    table : astropy.table.Table
+        Table of the multiplets
+
+        colnames:
+        'Nmax'
+        'OBS_ID'
+        'ID'
+        'RA'
+        'DEC'
+        'TIME'
+        'ENERGY'
+        'dt'
+        'da'
+
+        (added by Multiplets.addCoordinateInfo()
+        'MEDIAN_RA'
+        'MEDIAN_DEC'
+        'SkyCoord'
+        'MEDIAN_GLAT'
+        'MEDIAN_GLON'
+
+        (added by Multiplets.searchTeVCat()
+        'TEVCAT_SOURCE_NAME'
+        'TEVCAT_SOURCE_TYPE'
+        'TEVCAT_DISTANCES_DEG'
+
+        (added MANUALLY, use in_which_container())
+        'DS_INDEX'
+
+        (added by Multiplets.addRMS()
+        'ANGULAR_MEASURE_DEG']
+
+    reduced : astropy.table.Table
+        Table of the reduced multiplets
 
     Methods
     -------
 
-    loadMpletsBare()
-        Load the multiplets from the multiplets directory created by gt_scanner
+    loadMpletsBare(path: str) -> None
+        Load the multiplets from a path
 
-    addCoordinateInfo()
-        Add coordinate information to the table: MEAN_RA, MEAN_DEC, SkyCoord, MEAN_GLAT, MEAN_GLON
+    addCoordinateInfo() -> None
+        Add coordinate information (MEDIAN_RA, MEDIAN_DEC, SkyCoord, MEDIAN_GLAT, MEDIAN_GLON) to the table
 
-    getAitoffFigure(bounds_deg: list = [])
-        Plot the multiplets on an aitoff projection. If bounds_deg is given (as passed to gt_scanner), plot horizontal lines as well.
 
-    searchTeVCat(sources: list[Source])
-        Search TeVCat for the neares sources to each multiplet using KDTree nearest neighbor search.
 
-    addSourceInfo(identified_sources: list[Source], distances: list[float])
-        Add the source information to the mplet_table.
 
     """
 
@@ -209,10 +231,16 @@ class Multiplets:
         self.paths = [path]
         self.loadMpletsBare(path)
 
-    def inclSimbadSources(self, sources: list[str]) -> None:
-        self.incl_simbad_sources += sources
-
     def loadMpletsBare(self, path) -> None:
+        """
+        load the multiplets from a path returned by the transient tool.
+
+        Parameters
+        ----------
+        path : str
+            Path to the multiplet folder
+
+        """
         if path not in self.paths:
             self.paths.append(path)
             # try except
@@ -221,6 +249,9 @@ class Multiplets:
         self.table.sort("Nmax")
 
     def addCoordinateInfo(self) -> None:
+        """
+        Add coordinate information (MEDIAN_RA, MEDIAN_DEC, SkyCoord, MEDIAN_GLAT, MEDIAN_GLON) to Multiplets.table
+        """
         self.table["MEDIAN_RA"] = [np.median(lst) for lst in self.table["RA"]]
         self.table["MEDIAN_DEC"] = [np.median(lst) for lst in self.table["DEC"]]
 
@@ -234,6 +265,22 @@ class Multiplets:
         self.table["MEDIAN_GLON"] = self.table["SkyCoord"].galactic.l
 
     def getAitoffFigure(self, bounds_deg: list = []) -> (figure.Figure, axes.Axes):
+        """
+        Get a scatterplot of the multiplet coordinats in aitoff projection
+
+        Parameters
+        ----------
+
+        bounds_deg : list
+            List of GLAT bounds to be plotted as dashed lines, represent the galactic plane.
+
+        Returns
+        -------
+
+        fig : matplotlib.figure.Figure
+        ax : matplotlib.axes.Axes
+
+        """
         fig = figure.Figure()
         ax = fig.add_subplot(projection="aitoff")
         sc = ax.scatter(
@@ -264,6 +311,16 @@ class Multiplets:
         return fig, ax
 
     def searchTeVCat(self, sources: list[Source]):
+        """
+        Perform a nearest neighbour search (k-dimensional tree) in the TeVCat database from the median multiplet coordinate.
+
+        Parameters
+        ----------
+
+        sources : list[tevcat.Source]
+            List of tevcat sources to search from. All available sources can be obtained by tevcat.TeVCat().sources
+
+        """
         coordinates = np.asarray(
             [[source.getFK5().ra.deg, source.getFK5().dec.deg] for source in sources]
         )
@@ -285,6 +342,19 @@ class Multiplets:
     def addTevCatSourceInfo(
         self, identified_sources: list[Source], distances: list[float]
     ) -> None:
+        """
+        add Source information to Multiplets.table based on the nearest TeVCat source
+
+        Parameters
+        ----------
+
+        identified_sources : list[tevcat.Source]
+            List of tevcat sources that were identified as nearest neighbours
+
+        distances : list[float]
+            List of distances to the nearest TeVCat source
+
+        """
         self.table["TEVCAT_SOURCE_NAME"] = [
             source.canonical_name for source in identified_sources
         ]
@@ -297,6 +367,10 @@ class Multiplets:
         return len(self.table)
 
     def appendMultiplets(self, *others):
+        """
+        Append other Multiplets to self. Used to combine multiplets from different datasets.
+
+        """
         df = pd.concat(
             [self.table.to_pandas(), *[other.table.to_pandas() for other in others]],
             ignore_index=True,
@@ -309,7 +383,20 @@ class Multiplets:
         self,
         min_source_dist_deg: float = 0.2,
         galactic_plane_halfwidth_deg: float = 5.0,
-    ):
+    ) -> None:
+        """
+        Create a reduced datast excluding TeVCat sources and sources close to the galactic plane.
+
+        Parameters
+        ----------
+
+        min_source_dist_deg : float
+            Minimum distance to a TeVCat source in degrees
+
+        galactic_plane_halfwidth_deg : float
+            Halfwidth of the galactic plane exclusion zone in degrees
+
+        """
         noTeVCat_mask = self.table["TEVCAT_DISTANCES_DEG"] >= min_source_dist_deg
         xgal_mask = np.abs(self.table["MEDIAN_GLAT"]) > galactic_plane_halfwidth_deg
 
@@ -317,6 +404,10 @@ class Multiplets:
         print(f"Reducement of {len(self)} to {len(self.reduced)} rows.")
 
     def objectifyColumns(self) -> None:
+        """
+        Turn relevant Multiplets.table columns into dtype `object`. To be used on Multiplets that contain but one multiplicity, causing a merge of columns via Multiplets.appendMultiplets with different multiplicities to fail.
+
+        """
         for name in ["ID", "RA", "DEC", "TIME", "ENERGY"]:
             objectifyColumn(self.table, name)
 
@@ -324,14 +415,13 @@ class Multiplets:
         self.reduced = reduced
 
     def addRMS(self):
-        # self.table["ANGULAR_MEASURE_DEG"] = [
-        #     np.mean(
-        #         sphere_dist(row["RA"], row["DEC"], row["MEDIAN_RA"], row["MEDIAN_DEC"])
-        #     )
-        #     for row in self.table
-        # ]
+        """
+        Add a measure for the angular spread of the multiplet to Multiplets.table. Columname: ANGULAR_MEASURE_DEG
+        This is done by calculating the mean distance of the multiplet members to the median multiplet coordinate.
+
+        """
         measure = []
-        workers = int(cpu_count() / 3)
+        workers = int(cpu_count() / 2)
 
         with cf.ProcessPoolExecutor(workers) as ex:
             future_rms = [
@@ -353,21 +443,68 @@ class Multiplets:
 
 
 class Reduced:
+    """
+    A reduced Multiplets class (not a subclass) that contains the reduced multiplets and methods to add information to it.
+
+    Attributes
+    ----------
+    reduced : astropy.table.Table
+        Table of the reduced multiplets
+
+    datastores : list[DataStore]
+        List of datastores used to create the reduced multiplets
+
+    observation_per_ds : list[Observation]
+        List of observations per datastore
+
+    navtable : astropy.table.Table
+        Table containing "navigational information".
+
+        Columns:
+        MPLET_INDEX: index of the multiplet in reduced
+        DS_INDEX: index of the datastore in datastores
+        OBS_ID: observation id
+        OBS_INDEX_WITHIN_DS: index of the observation in observation_per_ds whn observations are retuned from the datastore, which is not   the same order as the OBS_IDs passed
+
+
+    """
+
     def __init__(self, path: str) -> None:
         with open(path, "rb") as f:
             self.reduced = dill.load(f)
 
-    def loadObservations(self):
-        self.datastores = getDataStores()
-        self.observation_per_ds = [
-            ds.get_observations(
-                np.unique(self.reduced["OBS_ID"].data[self.reduced["DS_INDEX"] == i]),
-                required_irf="all-optional",
-            )
-            for i, ds in enumerate(self.datastores)
-        ]
+    def loadObservations(self, per_ds: bool = False) -> None:
+        """
+        Load the datastores to Reduced.datastores and the observations to Reduced.observation_per_ds, if per_ds is True.
 
-    def loadNavtable(self, navpath: str = None):
+        Parameters
+        ----------
+
+        per_ds : bool (default: False)
+            If True, load the observations per datastore. If False, load all observations.
+        """
+        self.datastores = getDataStores()
+        if per_ds:
+            self.observation_per_ds = [
+                ds.get_observations(
+                    np.unique(
+                        self.reduced["OBS_ID"].data[self.reduced["DS_INDEX"] == i]
+                    ),
+                    required_irf="all-optional",
+                )
+                for i, ds in enumerate(self.datastores)
+            ]
+
+    def loadNavtable(self, navpath: str = None) -> None:
+        """
+        Load the navigation table from a path. If no path is given, make a new one.
+
+        Parameters
+        ----------
+
+        navpath : str (default: None)
+            Path to the navigation table. If None, make a new one.
+        """
         try:
             with open(navpath, "rb") as f:
                 self.navtable = dill.load(f)
@@ -375,7 +512,21 @@ class Reduced:
             print("Navtab not found, making from scratch.")
             self.navtable = self.makeNavigationTable()
 
-    def makeNavigationTable(self):
+    def makeNavigationTable(self) -> Table:
+        """
+        Make the navigation table from scratch.
+
+        Returns
+        -------
+        astropy.table.Table
+            Table containing metadata navigation information.
+
+            Columns:
+            MPLET_INDEX: index of the multiplet in reduced
+            DS_INDEX: index of the datastore in datastores
+            OBS_ID: observation id
+            OBS_INDEX_WITHIN_DS: index of the observation in observation_per_ds whn observations are retuned from the datastore, which is not   the same order as the OBS_IDs passed
+        """
         obs_id_to_index_per_ds = dict()
         for obs in self.observation_per_ds:
             obs_id_to_index_per_ds.update(
@@ -401,7 +552,16 @@ class Reduced:
         navigation_table.add_column(temp)
         return navigation_table
 
-    def addLambdaRatioSignificace(self):
+    def addLambdaRatioSignificace(self) -> None:
+        """
+        Add a data driven significance to each multiplet. This is the probability of finding N >= Nm photons within burst time given a background rate. The burst time is not assumed to avoid biasing the significance, but rather rates are calculated from exponential fits on the differences in arrival times. (Since counting photons is assumed to be Poisson, the Delta(arrival time) is to be exponentially distributed.)
+
+        Adds the following columns to Reduced.reduced:
+            LAMBDA_RATIO_SIGNIFICANCE: the significance of the multiplet
+        (if not already present)
+            BKG_DT_LAMBDA: the background rate in Hz
+            MPLET_DT_LAMBDA: the signal rate in GHz
+        """
         if ("BKG_DT_LAMBDA" not in self.reduced.colnames) or (
             "MPLET_DT_LAMBDA" not in self.reduced.colnames
         ):
@@ -430,7 +590,21 @@ class Reduced:
         )
 
     def addExponentialDtFits(self, radius_deg: float = 0.1):
-        workercount = int(cpu_count() / 3)
+        """
+        Perform exponential fits on the differences in arrival times for the candidate signal and the local background. Local is interpreted as the support for 68% prob mass of a PSF (taken to be a circular region with (default) radius 0.1 deg) centered around the multiplet median coordinate.
+
+        Arguments
+        ---------
+        radius_deg : float
+            Radius of the support for the background exponential fit in degrees
+
+        Adds the following columns to Reduced.reduced:
+            BKG_DT_LAMBDA: the background rate in Hz
+            MPLET_DT_LAMBDA: the signal rate in GHz
+            BKG_PHOTONS: the number of photons in the background region
+
+        """
+        workercount = int(cpu_count() / 2)
 
         """
         ==============
@@ -451,6 +625,7 @@ class Reduced:
                     self.reduced[row["MPLET_INDEX"]]["ID"],
                     self.reduced[row["MPLET_INDEX"]]["MEDIAN_RA"],
                     self.reduced[row["MPLET_INDEX"]]["MEDIAN_DEC"],
+                    radius_deg,
                 )
                 for row in self.navtable
             ]
@@ -496,9 +671,16 @@ class Reduced:
         self.reduced["MPLET_DT_LAMBDA"] = mplet_expon_fit_parameters
 
     def addDistanceToPNT(self):
+        """
+        Add the radial distances from the median multiplet coordinate to the pointing coordinates of the observations in which the multiplet is present.
+
+        Adds the following columns to Reduced.reduced:
+            PNT_DISTANCE: the distance in degrees
+        """
+
         distances = []
 
-        workercount = int(cpu_count() / 3)
+        workercount = int(cpu_count() / 2)
 
         with cf.ProcessPoolExecutor(workercount) as ex:
             future_distances = [
@@ -526,6 +708,13 @@ class Reduced:
         self.reduced["PNT_DISTANCE"] = distances
 
     def addPNTAltitude(self) -> None:
+        """
+        Add the pointing altitude to Reduced.reduced
+
+        Adds the following columns to Reduced.reduced:
+            ALT_PNT: the pointing altitude in degrees
+
+        """
         ## SUDDEN THOUGHT: compare with regular zenith distribution, maybe with the cumulative distributions // Smirnov test
         alt_pnt = []
         for row in tqdm(self.navtable):
@@ -537,35 +726,108 @@ class Reduced:
         self.reduced["ALT_PNT"] = alt_pnt
 
     def addExposureCorrectedP(self, exposure: WcsNDMap) -> None:
-        corrected_P = []
+        """
+        Add two exposure corrected significances, one multiplies the significance by the ratio of the exposure that is contained in the multiplet region to the total H.E.S.S. exposure , the other considers observing a multiplet as a Bernoulli trial and corrects the significance for the number of trials, being the number of runs available in the datastores (which should be the sampled dataset). Both methods are approximative: each run is assumed to have the same exposure (both in time and area). Values of zero result from the multiplet not being contained in the exposure geometry (very edge of FoV).
+
+        One should verify that these yield the same order of magnitude.
+
+        Parameters
+        ----------
+
+        exposure : gammapy.maps.WcsNDMap
+            Exposure map to use for the correction
+
+        Adds the following columns to Reduced.reduced:
+            EXP_CORRECTED_P: the blind exposure corrected significance, which can rise above 1.
+            BERNOULLI_P: the exposure corrected significance following the Bernoulli assumption
+        """
+        bell_fraction = []
+        print("Getting total runcount")
         runcount = get_total_runcount(self.datastores)
-        with cf.ProcessPoolExecutor(int(cpu_count() / 3)) as ex:
+        print("Starting multiprocessed bell_ratio.")
+        with cf.ProcessPoolExecutor(int(cpu_count() / 2)) as ex:
             future_expfactors = [
-                ex.sumit(get_bell_ratio(exposure, row["SkyCoord"]))
+                ex.submit(
+                    get_bell_ratio,
+                    exposure,
+                    SkyCoord(*exposure.geom.center_coord).directional_offset_by(
+                        0.0 * u.deg, row["PNT_DISTANCE"] * u.deg
+                    ),
+                )
                 for row in tqdm(self.reduced)
             ]
+        print("Analysing futures")
         for future in future_expfactors:
             try:
                 result = future.result()
             except Exception as e:
                 print(f"Error: {e}")
                 result = np.nan
-            corrected_P.append(result * runcount / result)
+            bell_fraction.append(result)
 
-        self.exposure["EXP_CORRECTED_P"] = corrected_P
+        print("Saving to Reduced.reduced")
+        bell_fraction = np.asarray(bell_fraction, dtype=np.double)
+        self.reduced["EXP_CORRECTED_P"] = (
+            runcount * self.reduced["LAMBDA_RATIO_SIGNIFICANCE"] * bell_fraction
+        )
+        self.reduced["BERNOULLI_P"] = 1.0 - np.power(
+            1.0 - (self.reduced["LAMBDA_RATIO_SIGNIFICANCE"] * bell_fraction), runcount
+        )
 
 
-def pxl_distance(i1: int, j1: int, i2: int, j2: int):
+def pxl_distance(i1: int, j1: int, i2: int, j2: int) -> float:
+    """
+    Compute Euclidean pixel distance between two pixels.
+
+    Parameters
+    ----------
+
+    i1, j1 : int
+        Pixel coordinates of the first pixel
+
+    i2, j2 : int
+        Pixel coordinates of the second pixel
+
+    Returns
+    -------
+    float
+        Euclidean pixel distance
+    """
     return np.sqrt(np.square(i1 - j1) + np.square(i2 - j2))
 
 
 def get_contained_indices(
     Nh: int, Nv: int, coord=tuple[int], center: tuple[int] = None
 ):
+    """
+    For an image of dimensions (Nh,Nv), get the image indices contained within a circle of radius pxl_distance(center,coord) around center.
+
+    Parameters
+    ----------
+    Nh, Nv : int
+        Image dimensions
+
+    coord : tuple[int]
+        Pixel coordinates of the center of the circle
+
+    center : tuple[int] (default: None)
+        Pixel coordinates of the center of the image. If None, use the center of the image (Nh/2, Nv/2).
+
+    Returns
+    -------
+
+    contained_indices : tuple[np.ndarray]
+        Tuple of two arrays containing respectively the x and y indices of the pixels contained within the circle.
+
+    """
+    if len(coord) != 2:
+        raise ValueError(
+            f"Coord should be a tuple of length 2 but has length {len(coord)}"
+        )
     if not center:
         center = (int(Nh / 2), int(Nv / 2))
     x, y = np.meshgrid(np.arange(Nh), np.arange(Nv))
-    distances = np.sqrt(np.square(x - coord[0]) + np.square(y - coord[1]))
+    distances = np.sqrt(np.square(x - center[0]) + np.square(y - center[1]))
     radius = pxl_distance(*center, *coord)
 
     contained_indices = np.where(distances <= radius)
@@ -573,14 +835,49 @@ def get_contained_indices(
 
 
 def get_bell_ratio(exposure: WcsNDMap, signal: SkyCoord):
-    spatial_exposure = exposure.sum_over_axes(keepdims=False)
-    contained_idx = get_contained_indices(*spatial_exposure.data.shape, signal)
+    """
+    Get the probability mass of the normalized exposure contained in the tails of the distribution, defined as the pixels further than `signal` is from the center of the exposure map WCS geometry.
+
+    Parameters
+    ----------
+    exposure : gammapy.maps.WcsNDMap
+        Exposure map to use for the correction
+
+    signal : astropy.coordinates.SkyCoord
+        Coordinate of the signal
+
+    Returns
+    -------
+
+    bell_ratio : float
+    """
+    spatial_exposure: WcsNDMap = exposure.sum_over_axes(keepdims=False)
+    if not spatial_exposure.geom.contains(signal)[0]:
+        print("get_bell_ratio: signal not contained in exposure geometry! Returning 0.")
+        return 0.0
+    contained_idx = get_contained_indices(
+        *spatial_exposure.data.shape,
+        np.array(spatial_exposure.geom.coord_to_idx(signal)).flatten(),
+    )
     normalization = np.sum(spatial_exposure.data)
-    contained_exposure = np.sum(spatial_exposure.get_by_idx(contained_exposure))
+    contained_exposure = np.sum(spatial_exposure.get_by_idx(contained_idx))
     return 1 - contained_exposure / normalization
 
 
 def get_total_runcount(ds: list[DataStore]):
+    """
+    Get the total amount of runs contained in all DataStores in ds.
+
+    Parameters
+    ----------
+    ds : list[DataStore]
+        List of DataStores
+
+    Returns
+    -------
+    runcount : int
+        Total amount of runs in ds
+    """
     runcount = 0
     for store in ds:
         runcount += len(store.obs_ids)
@@ -647,6 +944,23 @@ def run_expon_fit_worker(
 
 
 def in_which_container(item, containers: list[set]):
+    """
+    Query in which contained `item` is located. Using sets for the containers is recommended as this makes the search algorithm O(1).
+
+    Parameters
+    ----------
+
+    item: object
+
+    containers: list[set]
+        The candidate containers to search in.
+
+    Returns
+    -------
+
+    index: int
+        The index of the container in which `item` is located.
+    """
     sets = [set(c) for c in containers]
     for i, myset in enumerate(sets):
         if item in myset:
@@ -659,6 +973,23 @@ def getDataStores():
     hess1u_datastore = DataStore.from_dir("$HESS1U")
 
     return [hess1_datastore, hess1u_datastore]
+
+
+def main_correctP(reduced_path: str):
+    rd = Reduced(reduced_path)
+    print("Loading observations")
+    rd.loadObservations()
+    print("Loading exposure")
+    with open(
+        "testing/mc_scanner/real_dataset_dumps/hbl/stacked_datasets.pkl", "rb"
+    ) as f:
+        exposure: WcsNDMap = dill.load(f).exposure
+    print("Starting exposure correction")
+    rd.addExposureCorrectedP(exposure)
+
+    print("dumping rd.reduced")
+    with open("testing/pkl_jugs/reduced_correctedP_020923.pkl", "wb") as f:
+        dill.dump(rd.reduced, f)
 
 
 def main_fits():
@@ -842,7 +1173,9 @@ def main_aitov(mplets):
 
 
 if __name__ == "__main__":
-    generate_new_mplets = True
+    generate_new_mplets = False
 
     if generate_new_mplets:
-        setup_mplets()
+        setup_mplets
+    else:
+        main_correctP("testing/pkl_jugs/reduced_with_alt.pkl")
