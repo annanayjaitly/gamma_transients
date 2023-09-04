@@ -22,6 +22,8 @@ import healpy as hp
 from gammapy.data import DataStore, Observation
 from gammapy.maps import WcsNDMap
 
+# from lmfit.models import
+
 
 def sphere_dist(ra1, dec1, ra2, dec2):
     """
@@ -208,7 +210,7 @@ class Multiplets:
         'DS_INDEX'
 
         (added by Multiplets.addRMS()
-        'ANGULAR_MEASURE_DEG']
+        'MPLET_RMS'
 
     reduced : astropy.table.Table
         Table of the reduced multiplets
@@ -416,7 +418,7 @@ class Multiplets:
 
     def addRMS(self):
         """
-        Add a measure for the angular spread of the multiplet to Multiplets.table. Columname: ANGULAR_MEASURE_DEG
+        Add a measure for the angular spread of the multiplet to Multiplets.table. Columname: MPLET_RMS
         This is done by calculating the mean distance of the multiplet members to the median multiplet coordinate.
 
         """
@@ -426,7 +428,11 @@ class Multiplets:
         with cf.ProcessPoolExecutor(workers) as ex:
             future_rms = [
                 ex.submit(
-                    np.mean, row["RA"], row["DEC"], row["MEDIAN_RA"], row["MEDIAN_DEC"]
+                    rms_worker,
+                    row["RA"],
+                    row["DEC"],
+                    row["MEDIAN_RA"],
+                    row["MEDIAN_DEC"],  ##
                 )
                 for row in tqdm(self.table)
             ]
@@ -439,7 +445,11 @@ class Multiplets:
                 result = np.nan
             measure.append(result)
 
-        self.table["ANGULAR_MEASURE_DEG"] = measure
+        self.table["MPLET_RMS"] = measure
+
+
+def rms_worker(ra: np.ndarray, dec: np.ndarray, cra: float, cdec: float) -> float:
+    return np.std(sphere_dist(ra, dec, cra, cdec))
 
 
 class Reduced:
@@ -767,6 +777,8 @@ class Reduced:
 
         print("Saving to Reduced.reduced")
         bell_fraction = np.asarray(bell_fraction, dtype=np.double)
+
+        self.reduced["BELL_FRACTION"] = bell_fraction
         self.reduced["EXP_CORRECTED_P"] = (
             runcount * self.reduced["LAMBDA_RATIO_SIGNIFICANCE"] * bell_fraction
         )
@@ -834,7 +846,7 @@ def get_contained_indices(
     return contained_indices
 
 
-def get_bell_ratio(exposure: WcsNDMap, signal: SkyCoord):
+def get_bell_ratio(exposure: WcsNDMap, signal: SkyCoord, signal_width_deg: float):
     """
     Get the probability mass of the normalized exposure contained in the tails of the distribution, defined as the pixels further than `signal` is from the center of the exposure map WCS geometry.
 
@@ -855,8 +867,14 @@ def get_bell_ratio(exposure: WcsNDMap, signal: SkyCoord):
     if not spatial_exposure.geom.contains(signal)[0]:
         print("get_bell_ratio: signal not contained in exposure geometry! Returning 0.")
         return 0.0
+
+    signal_edgecoor: SkyCoord = signal.directional_offset_by(
+        0.0 * u.deg, signal_width_deg * u.deg
+    )
+
     contained_idx = get_contained_indices(
         *spatial_exposure.data.shape,
+        np.array(spatial_exposure.geom.coord_to_idx(signal_edgecoor)).flatten(),
         np.array(spatial_exposure.geom.coord_to_idx(signal)).flatten(),
     )
     normalization = np.sum(spatial_exposure.data)
