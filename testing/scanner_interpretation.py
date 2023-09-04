@@ -449,7 +449,7 @@ class Multiplets:
 
 
 def rms_worker(ra: np.ndarray, dec: np.ndarray, cra: float, cdec: float) -> float:
-    return np.std(sphere_dist(ra, dec, cra, cdec))
+    return np.quantile(sphere_dist(ra, dec, cra, cdec), 0.68)
 
 
 class Reduced:
