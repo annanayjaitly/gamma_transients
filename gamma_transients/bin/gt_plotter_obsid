@@ -79,10 +79,11 @@ if args.single_run_analysis:
             sobs = data_store.get_observations([multiplet["OBS_ID"]])
         except:
             print(f"{multiplet['OBS_ID']} is in another castle, skipping")
+            continue
 
         duration = Time(multiplet["TIME"][-1]) - Time(multiplet["TIME"][0])
         print("Run number: " + str(multiplet["OBS_ID"]))
-        print("Burst duration: %.01f s" % duration.sec)
+        print("Burst duration: %.01f ms" % duration.to_value("ms"))
 
         Emax = str(np.max(multiplet["ENERGY"])) + " TeV"
         print("Emax = " + Emax)
@@ -132,7 +133,7 @@ if args.single_run_analysis:
         analysis.get_observations()
         analysis.get_datasets()
 
-        estimator = ExcessMapEstimator(0.05 * u.deg, selection_optional=[])
+        estimator = ExcessMapEstimator(0.1 * u.deg, selection_optional=[])
         lima_maps = estimator.run(analysis.datasets["stacked"])
         significance_map = lima_maps["sqrt_ts"]
         try:
@@ -195,8 +196,8 @@ if args.single_run_analysis:
             % (m_i, Emax, interval[0][0], interval[0][1])
         )
         plt.gcf().suptitle(
-            "Multiplet %s ; Emax = %s ; Nmax = %s ; dt = %0.0f s ; run = %s"
-            % (m_i, Emax, N_multiplets, duration.sec, multiplet["OBS_ID"])
+            "Multiplet %s ; Emax = %s ; Nmax = %s ; dt = %0.0f ms ; run = %s"
+            % (m_i, Emax, N_multiplets, duration.to_value("ms"), multiplet["OBS_ID"])
         )
         # plt.savefig(prefix / ("run_%s.%s" % (multiplet["OBS_ID"], args.fmt)))
         plt.savefig(f"{prefix}/run_{multiplet['OBS_ID']}_mi_{m_i}")

@@ -1,4 +1,5 @@
 # from gamma_transients import core
+from typing import Any
 import dill
 from os import cpu_count
 from tqdm import tqdm
@@ -23,6 +24,13 @@ from gammapy.data import DataStore, Observation
 from gammapy.maps import WcsNDMap
 
 # from lmfit.models import
+
+
+from scipy.special import erfinv
+
+
+def n_sigmas(p):
+    return (2**0.5) * erfinv(1.0 - p)
 
 
 def sphere_dist(ra1, dec1, ra2, dec2):
@@ -210,21 +218,11 @@ class Multiplets:
         'DS_INDEX'
 
         (added by Multiplets.addRMS()
-        'MPLET_RMS'
+        'ANGULAR_MEASURE_DEG'
+
 
     reduced : astropy.table.Table
         Table of the reduced multiplets
-
-    Methods
-    -------
-
-    loadMpletsBare(path: str) -> None
-        Load the multiplets from a path
-
-    addCoordinateInfo() -> None
-        Add coordinate information (MEDIAN_RA, MEDIAN_DEC, SkyCoord, MEDIAN_GLAT, MEDIAN_GLON) to the table
-
-
 
 
     """
@@ -364,6 +362,7 @@ class Multiplets:
             source.source_type_name for source in identified_sources
         ]
         self.table["TEVCAT_DISTANCES_DEG"] = distances
+        self.table["TEVCAT_FLUX_CRAB"] = [source.flux for source in identified_sources]
 
     def __len__(self) -> int:
         return len(self.table)
@@ -383,7 +382,7 @@ class Multiplets:
 
     def createReduced(
         self,
-        min_source_dist_deg: float = 0.2,
+        min_source_dist_deg: float = 0.1,
         galactic_plane_halfwidth_deg: float = 5.0,
     ) -> None:
         """
@@ -418,7 +417,7 @@ class Multiplets:
 
     def addRMS(self):
         """
-        Add a measure for the angular spread of the multiplet to Multiplets.table. Columname: MPLET_RMS
+        Add a measure for the angular spread of the multiplet to Multiplets.table. Columname: ANGULAR_MEASURE_DEG
         This is done by calculating the mean distance of the multiplet members to the median multiplet coordinate.
 
         """
@@ -445,7 +444,7 @@ class Multiplets:
                 result = np.nan
             measure.append(result)
 
-        self.table["MPLET_RMS"] = measure
+        self.table["ANGULAR_MEASURE_DEG"] = measure
 
 
 def rms_worker(ra: np.ndarray, dec: np.ndarray, cra: float, cdec: float) -> float:
@@ -460,6 +459,28 @@ class Reduced:
     ----------
     reduced : astropy.table.Table
         Table of the reduced multiplets
+
+        colnames:
+        see Multiplets.table
+
+        (added by Reduced.addLambdaRatioSignificace())
+        'LAMBDA_RATIO_SIGNIFICANCE'
+        'BKG_DT_LAMBDA'
+        'MPLET_DT_LAMBDA'
+
+        (added by Reduced.addDistanceToPNT())
+        'PNT_DISTANCE'
+
+        (added by Reduced.addPNTAltitude())
+        'ALT_PNT'
+
+        (added by Reduced.addExposureCorrectedP())
+        'BELL_FRACTION'
+        'EXP_CORRECTED_P'
+        'BERNOULLI_P'
+        'BERNOULLI_SIGMA'
+
+
 
     datastores : list[DataStore]
         List of datastores used to create the reduced multiplets
@@ -723,17 +744,25 @@ class Reduced:
 
         Adds the following columns to Reduced.reduced:
             ALT_PNT: the pointing altitude in degrees
+            PNT_SOURCE: the source H.E.S.S. was pointing to
 
         """
         ## SUDDEN THOUGHT: compare with regular zenith distribution, maybe with the cumulative distributions // Smirnov test
         alt_pnt = []
+        pnt_source = []
         for row in tqdm(self.navtable):
             alt = self.observation_per_ds[row["DS_INDEX"]][
                 int(row["OBS_INDEX_WITHIN_DS"])
             ].obs_info["ALT_PNT"]
             alt_pnt.append(alt)
 
+            sc = self.observation_per_ds[row["DS_INDEX"]][
+                int(row["OBS_INDEX_WITHIN_DS"])
+            ].obs_info["OBJECT"]
+            pnt_source.append(sc)
+
         self.reduced["ALT_PNT"] = alt_pnt
+        self.reduced["PNT_SOURCE"] = sc
 
     def addExposureCorrectedP(self, exposure: WcsNDMap) -> None:
         """
@@ -748,13 +777,22 @@ class Reduced:
             Exposure map to use for the correction
 
         Adds the following columns to Reduced.reduced:
+            BELL_FRACTION: the exposure fraction within the mplet region
             EXP_CORRECTED_P: the blind exposure corrected significance, which can rise above 1.
             BERNOULLI_P: the exposure corrected significance following the Bernoulli assumption
+            BERNOULLI_SIGMA: p value converted into standard deviations.
         """
         bell_fraction = []
         print("Getting total runcount")
         runcount = get_total_runcount(self.datastores)
         print("Starting multiprocessed bell_ratio.")
+        # get_bell_ratio(
+        #     exposure,
+        #     SkyCoord(*exposure.geom.center_coord).directional_offset_by(
+        #         0.0 * u.deg, self.reduced[0]["PNT_DISTANCE"] * u.deg
+        #     ),
+        #     self.reduced[0]["da"],
+        # )
         with cf.ProcessPoolExecutor(int(cpu_count() / 2)) as ex:
             future_expfactors = [
                 ex.submit(
@@ -763,6 +801,7 @@ class Reduced:
                     SkyCoord(*exposure.geom.center_coord).directional_offset_by(
                         0.0 * u.deg, row["PNT_DISTANCE"] * u.deg
                     ),
+                    row["ANGULAR_MEASURE_DEG"],
                 )
                 for row in tqdm(self.reduced)
             ]
@@ -780,37 +819,75 @@ class Reduced:
 
         self.reduced["BELL_FRACTION"] = bell_fraction
         self.reduced["EXP_CORRECTED_P"] = (
-            runcount * self.reduced["LAMBDA_RATIO_SIGNIFICANCE"] * bell_fraction
+            runcount * self.reduced["LAMBDA_RATIO_SIGNIFICANCE"] / bell_fraction
         )
         self.reduced["BERNOULLI_P"] = 1.0 - np.power(
-            1.0 - (self.reduced["LAMBDA_RATIO_SIGNIFICANCE"] * bell_fraction), runcount
+            1.0 - (self.reduced["LAMBDA_RATIO_SIGNIFICANCE"] / bell_fraction), runcount
         )
 
+        self.reduced["BERNOULLI_SIGMA"] = n_sigmas(self.reduced["BERNOULLI_P"])
 
-def pxl_distance(i1: int, j1: int, i2: int, j2: int) -> float:
-    """
-    Compute Euclidean pixel distance between two pixels.
-
-    Parameters
-    ----------
-
-    i1, j1 : int
-        Pixel coordinates of the first pixel
-
-    i2, j2 : int
-        Pixel coordinates of the second pixel
-
-    Returns
-    -------
-    float
-        Euclidean pixel distance
-    """
-    return np.sqrt(np.square(i1 - j1) + np.square(i2 - j2))
+    def getCandidate(self, obs_id: int):
+        return self.reduced[self.reduced["OBS_ID"] == obs_id]
 
 
-def get_contained_indices(
-    Nh: int, Nv: int, coord=tuple[int], center: tuple[int] = None
-):
+class Candidate:
+    def __init__(self, row: Row) -> None:
+        if type(row) == Table:
+            print(f"row is a Table of length {len(row)}, not a row. Taking first!")
+            self.mplet = row[0]
+        else:
+            self.mplet = row
+        self.obs_id = self.mplet["OBS_ID"]
+        ds = getDataStores()
+        try:
+            self.obs = ds[0].obs(self.obs_id)
+            print("hess1")
+        except:
+            self.obs = ds[1].obs(self.obs_id)
+            print("hess1u")
+
+    def ToAScatter(self, max_dist: float = 0.1) -> (figure.Figure, axes.Axes):
+        phottable = self.obs.events.table
+
+        run_dist = sphere_dist(
+            phottable["RA"].data,
+            phottable["DEC"].data,
+            self.mplet["MEDIAN_RA"],
+            self.mplet["MEDIAN_DEC"],
+        )
+
+        mask = run_dist < max_dist
+
+        fig = figure.Figure()
+        ax = fig.add_subplot()
+        ax.scatter(phottable[mask]["TIME"], run_dist[mask], s=4, marker="x")
+        ax.set_xlim(self.obs.obs_info["TSTART"], self.obs.obs_info["TSTOP"])
+        return fig, ax
+
+
+# def pxl_distance(i1: int, j1: int, i2: int, j2: int) -> float:
+#     """
+#     Compute Euclidean pixel distance between two pixels.
+
+#     Parameters
+#     ----------
+
+#     i1, j1 : int
+#         Pixel coordinates of the first pixel
+
+#     i2, j2 : int
+#         Pixel coordinates of the second pixel
+
+#     Returns
+#     -------
+#     float
+#         Euclidean pixel distance
+#     """
+#     return np.sqrt(np.square(i1 - j1) + np.square(i2 - j2))
+
+
+def get_contained_indices(Nh: int, Nv: int, coord=tuple[int], center: tuple[int] = ()):
     """
     For an image of dimensions (Nh,Nv), get the image indices contained within a circle of radius pxl_distance(center,coord) around center.
 
@@ -836,11 +913,12 @@ def get_contained_indices(
         raise ValueError(
             f"Coord should be a tuple of length 2 but has length {len(coord)}"
         )
-    if not center:
+    if len(center) != 2:
+        print("Making new center")
         center = (int(Nh / 2), int(Nv / 2))
     x, y = np.meshgrid(np.arange(Nh), np.arange(Nv))
     distances = np.sqrt(np.square(x - center[0]) + np.square(y - center[1]))
-    radius = pxl_distance(*center, *coord)
+    radius = np.sqrt(np.sum(np.square(center - coord)))
 
     contained_indices = np.where(distances <= radius)
     return contained_indices
@@ -879,7 +957,7 @@ def get_bell_ratio(exposure: WcsNDMap, signal: SkyCoord, signal_width_deg: float
     )
     normalization = np.sum(spatial_exposure.data)
     contained_exposure = np.sum(spatial_exposure.get_by_idx(contained_idx))
-    return 1 - contained_exposure / normalization
+    return contained_exposure / normalization
 
 
 def get_total_runcount(ds: list[DataStore]):
@@ -993,85 +1071,18 @@ def getDataStores():
     return [hess1_datastore, hess1u_datastore]
 
 
-def main_correctP(reduced_path: str):
-    rd = Reduced(reduced_path)
-    print("Loading observations")
-    rd.loadObservations()
-    print("Loading exposure")
-    with open(
-        "testing/mc_scanner/real_dataset_dumps/hbl/stacked_datasets.pkl", "rb"
-    ) as f:
-        exposure: WcsNDMap = dill.load(f).exposure
-    print("Starting exposure correction")
-    rd.addExposureCorrectedP(exposure)
-
-    print("dumping rd.reduced")
-    with open("testing/pkl_jugs/reduced_correctedP_020923.pkl", "wb") as f:
-        dill.dump(rd.reduced, f)
+def main():
+    print("Mplets")
+    mplets = bare_load_mplets()
+    print("Mplet manips")
+    rdpath = mplet_manips(mplets)
+    print("Reduced manips")
+    reduced_manips(rdpath)
 
 
-def main_fits():
-    print("Loading mplets")
-    with open("testing/pkl_jugs/n4/mplets.pkl", "rb") as f:
-        mplets: Multiplets = dill.load(f)
-
-    print("Got mplets, getting datastores.")
-    datastores = getDataStores()
-    print("Creating reduced dataset")
-    mplets.createReduced()
-    print(
-        f"unique obs ids in reduced dataset: {len(np.unique(mplets.reduced['OBS_ID'].data))}"
-    )
-
-    with open("testing/pkl_jugs/n4/reduced.pkl", "wb") as f:
-        dill.dump(mplets.reduced, f)
-
-    print("Adding local background rate to mplets.reduced")
-    mplets.addExponentialDtFits(
-        datastores, navpath="testing/pkl_jugs/n4/navigationtable.pkl"
-    )
-
-    ## estimation based on poisson
-    ## estimation based on simulation, maybe incorportate in addLocalBackgroundRate since you have the observations there
-    # with open("testing/pkl_jugs/reduced_with_bkg.pkl", "wb") as f:
-    #     dill.dump(mplets.reduced, f)
-
-    mplets.addLambdaRatioSignificace()
-    with open("testing/pkl_jugs/reduced_with_significance.pkl", "wb") as f:
-        dill.dump(mplets.reduced, f)
-
-
-def main_signifiance():
-    print("Loading mplets")
-    with open("testing/pkl_jugs/mplets.pkl", "rb") as f:
-        mplets: Multiplets = dill.load(f)
-
-    with open("testing/pkl_jugs/reduced_with_bkg.pkl", "rb") as f:
-        mplets.setReduced(dill.load(f))
-        print(f"Reduced length: {len(mplets.reduced)}")
-
-    mplets.addLambdaRatioSignificace()
-
-    print("dumping")
-    with open("testing/pkl_jugs/reduced_with_significance.pkl", "wb") as f:
-        dill.dump(mplets.reduced, f)
-
-
-def main_fixparam():
-    with open("testing/pkl_jugs/reduced_with_bkg.pkl", "rb") as f:
-        reduced: Table = dill.load(f)
-
-    mplet_fitparams = reduced["MPLET_DT_LAMBDA"]
-    print(f"mplet fitparams sample {mplet_fitparams[0]}")
-
-    lamb = [1.0 / par[1] for par in mplet_fitparams]
-    reduced.remove_column("MPLET_DT_LAMBDA")
-    reduced["MPLET_DT_LAMBDA"] = lamb
-    with open("testing/pkl_jugs/reduced_with_bkg.pkl", "wb") as f:
-        dill.dump(reduced, f)
-
-
-def setup_mplets():
+def bare_load_mplets(
+    prefix: str = "/lustre/fs22/group/hess/user/wybouwt/full_scanner_survey/nmax4_da_increased",
+) -> Multiplets:
     bands = [
         "u_5_15",
         "u_15_25",
@@ -1092,27 +1103,27 @@ def setup_mplets():
         "center",
     ]
     versions = ["hess1", "hess1u"]
-    paths = [
-        f"/lustre/fs22/group/hess/user/wybouwt/full_scanner_survey/nmax4_da_increased/{version}/{band}"
-        for band in bands
-        for version in versions
-    ]
-    # mplets = scani.Multiplets(paths[0])
-    # mplets.appendMultiplets(*[scani.Multiplets(path) for path in paths[1:]])
+    paths = [f"{prefix}/{version}/{band}" for band in bands for version in versions]
     mplet_list = [Multiplets(path) for path in paths]
     Nmax_list = [np.unique(mplets.table["Nmax"].data) for mplets in mplet_list]
 
-    for i in range(len(Nmax_list)):
-        print(i, Nmax_list[i])
+    unique_nmax_bands = []
+    for i, Nmax in enumerate(Nmax_list):
+        if len(Nmax) == 1:
+            unique_nmax_bands.append(i)
 
-    # unicorns = [9, 18]
-    # unicorns = [7, 16, 17, 24, 25, 32]
-    for mplet in mplet_list:
-        mplet.objectifyColumns()
+    for k in unique_nmax_bands:
+        mplet_list[k].objectifyColumns()
 
     mplets = mplet_list[0]
     mplets.appendMultiplets(*mplet_list[1:])
 
+    with open("testing/pkl_jugs/n4/mplets_bare.pkl", "wb") as f:
+        dill.dump(mplets, f)
+    return mplets
+
+
+def mplet_manips(mplets: Multiplets) -> str:
     from tevcat import TeVCat
 
     tevcat = TeVCat()
@@ -1127,18 +1138,129 @@ def setup_mplets():
     mplets.table["DS_INDEX"] = ds_mplet_indices
     mplets.addRMS()
 
-    print("Dumping the mplets object.")
-    with open("testing/pkl_jugs/n4/mplets.pkl", "wb") as f:
-        dill.dump(mplets, f)
-
-    print("Creating reduced dataset")
     mplets.createReduced()
+
+    redpath = "testing/pkl_jugs/n4/reduced0.pkl"
+    with open(redpath, "wb") as f:
+        dill.dump(mplets.reduced, f)
     print(
         f"unique obs ids in reduced dataset: {len(np.unique(mplets.reduced['OBS_ID'].data))}"
     )
-    print("Dumping bare reduced")
-    with open("testing/pkl_jugs/n4/reduced_bare.pkl", "wb") as f:
-        dill.dump(mplets.reduced, f)
+    return redpath
+
+
+def reduced_manips(redpath: str):
+    rd = Reduced(redpath)
+    rd.loadObservations(per_ds=True)
+    rd.loadNavtable()
+
+    print("dumping navtable")
+    with open("testing/pkl_jugs/n4/navtab.pkl", "wb") as f:
+        dill.dump(rd.navtable, f)
+
+    print("Adding PNT metadata.")
+    rd.addPNTAltitude()
+    rd.addDistanceToPNT()
+    print("Adding exponential fits.")
+    rd.addExponentialDtFits()
+    print("Adding Lambda ratio significance.")
+    rd.addLambdaRatioSignificace()
+    print("Correcting for exposure.")
+    with open(
+        "testing/mc_scanner/real_dataset_dumps/hbl/stacked_datasets.pkl", "rb"
+    ) as f:
+        exposure: WcsNDMap = dill.load(f).exposure
+    rd.addExposureCorrectedP(exposure)
+
+    with open("testing/pkl_jugs/n4/reduced_complete.pkl", "wb") as f:
+        dill.dump(rd.reduced, f)
+
+
+# def main_correctP(reduced_path: str):
+#     rd = Reduced(reduced_path)
+#     print("Loading observations")
+#     rd.loadObservations()
+#     print("Loading exposure")
+#     with open(
+#         "testing/mc_scanner/real_dataset_dumps/hbl/stacked_datasets.pkl", "rb"
+#     ) as f:
+#         exposure: WcsNDMap = dill.load(f).exposure
+#     print("Starting exposure correction")
+#     rd.addExposureCorrectedP(exposure)
+
+#     print("dumping rd.reduced")
+#     with open("testing/pkl_jugs/reduced_correctedP_020923.pkl", "wb") as f:
+#         dill.dump(rd.reduced, f)
+
+
+# def setup_mplets():
+#     bands = [
+#         "u_5_15",
+#         "u_15_25",
+#         "u_25_35",
+#         "u_35_45",
+#         "u_45_55",
+#         "u_55_65",
+#         "u_65_75",
+#         "u_75_90",
+#         "l_15_5",
+#         "l_25_15",
+#         "l_35_25",
+#         "l_45_35",
+#         "l_55_45",
+#         "l_65_55",
+#         "l_75_65",
+#         "l_90_75",
+#         "center",
+#     ]
+#     versions = ["hess1", "hess1u"]
+#     paths = [
+#         f"/lustre/fs22/group/hess/user/wybouwt/full_scanner_survey/nmax4_da_increased/{version}/{band}"
+#         for band in bands
+#         for version in versions
+#     ]
+#     # mplets = scani.Multiplets(paths[0])
+#     # mplets.appendMultiplets(*[scani.Multiplets(path) for path in paths[1:]])
+#     mplet_list = [Multiplets(path) for path in paths]
+#     Nmax_list = [np.unique(mplets.table["Nmax"].data) for mplets in mplet_list]
+
+#     for i in range(len(Nmax_list)):
+#         print(i, Nmax_list[i])
+
+#     # unicorns = [9, 18]
+#     # unicorns = [7, 16, 17, 24, 25, 32]
+#     for mplet in mplet_list:
+#         mplet.objectifyColumns()
+
+#     mplets = mplet_list[0]
+#     mplets.appendMultiplets(*mplet_list[1:])
+
+#     from tevcat import TeVCat
+
+#     tevcat = TeVCat()
+#     mplets.searchTeVCat(tevcat.sources)
+
+#     datastores = getDataStores()
+#     ds_mplet_indices = [
+#         in_which_container(id, containers=[ds.obs_ids for ds in datastores])
+#         for id in tqdm(mplets.table["OBS_ID"].data)
+#     ]
+
+#     mplets.table["DS_INDEX"] = ds_mplet_indices
+#     mplets.addRMS()
+
+#     print("Dumping the mplets object.")
+#     with open("testing/pkl_jugs/n4/mplets.pkl", "wb") as f:
+#         dill.dump(mplets, f)
+
+#     print("Creating reduced dataset")
+#     mplets.createReduced()
+#     print(
+#         f"unique obs ids in reduced dataset: {len(np.unique(mplets.reduced['OBS_ID'].data))}"
+#     )
+#     print("Dumping bare reduced")
+#     with open("testing/pkl_jugs/n4/reduced_bare.pkl", "wb") as f:
+#         dill.dump(mplets.reduced, f)
 
 
 def main_aitov(mplets):
@@ -1191,9 +1313,4 @@ def main_aitov(mplets):
 
 
 if __name__ == "__main__":
-    generate_new_mplets = False
-
-    if generate_new_mplets:
-        setup_mplets
-    else:
-        main_correctP("testing/pkl_jugs/reduced_with_alt.pkl")
+    main()
