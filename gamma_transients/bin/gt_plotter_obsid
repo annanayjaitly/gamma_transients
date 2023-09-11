@@ -1,0 +1,346 @@
+#!/usr/bin/env python
+
+import dill
+
+import numpy as np
+
+import astropy.units as u
+from astropy.coordinates import SkyCoord
+from astropy.time import Time, TimeDelta
+
+from gammapy.maps import Map
+from gammapy.data import DataStore
+from gammapy.analysis import Analysis, AnalysisConfig
+from gammapy.estimators import ExcessMapEstimator
+
+import matplotlib.pyplot as plt
+
+from urllib.request import urlretrieve
+from pathlib import Path
+
+import argparse
+
+argp = argparse.ArgumentParser()
+argp.add_argument("--verbose", action="store_true", dest="verbose", required=False)
+argp.add_argument("--prefix", action="store", dest="prefix", required=True)
+argp.add_argument(
+    "--single-run-analysis",
+    action="store_true",
+    dest="single_run_analysis",
+    required=False,
+)
+argp.add_argument(
+    "--data-store", action="store", dest="data_store", type=str, required=True
+)
+argp.add_argument(
+    "--run-duration",
+    action="store",
+    dest="run_duration",
+    type=float,
+    default=28 * 60,
+    required=False,
+)
+argp.add_argument(
+    "--dt-margin",
+    action="store",
+    dest="dt_margin",
+    type=float,
+    default=10,
+    required=False,
+)
+argp.add_argument(
+    "--fmt", action="store", dest="fmt", default="pdf", type=str, required=False
+)
+argp.add_argument(
+    "--exclusion-map",
+    action="store",
+    dest="exclusion_map",
+    default="",
+    type=str,
+    required=False,
+)
+
+args = argp.parse_args()
+
+prefix = Path(args.prefix)
+prefix_str = str(prefix)
+tokens = list(prefix_str)
+N_multiplets = tokens[-1]
+print("N_multiplets: ", N_multiplets)
+
+# target = SkyCoord(args.ra, args.dec, unit="deg", frame="icrs").icrs
+with open(prefix / "multiplets.pkl", "rb") as fl:
+    multiplets = dill.load(fl)
+
+if args.single_run_analysis:
+    data_store = DataStore.from_dir(args.data_store)
+    for m_i, multiplet in enumerate(multiplets):
+        try:
+            sobs = data_store.get_observations([multiplet["OBS_ID"]])
+        except:
+            print(f"{multiplet['OBS_ID']} is in another castle, skipping")
+            continue
+
+        duration = Time(multiplet["TIME"][-1]) - Time(multiplet["TIME"][0])
+        print("Run number: " + str(multiplet["OBS_ID"]))
+        print("Burst duration: %.01f ms" % duration.to_value("ms"))
+
+        Emax = str(np.max(multiplet["ENERGY"])) + " TeV"
+        print("Emax = " + Emax)
+
+        try:
+            events = [sobs[0].events]
+        except:
+            continue
+
+        config = AnalysisConfig()
+
+        config.observations.obs_ids = [multiplet["OBS_ID"]]
+        config.observations.datastore = args.data_store
+        # We define the cone search parameters
+        config.observations.obs_cone.frame = "icrs"
+        config.observations.obs_cone.lon = str(sobs[0].obs_info["RA_PNT"]) + " deg"
+        config.observations.obs_cone.lat = str(sobs[0].obs_info["DEC_PNT"]) + " deg"
+        # config.observations.obs_cone.lon = str(np.mean(multiplet["RA"])) + " deg"
+        # config.observations.obs_cone.lat = str(np.mean(multiplet["DEC"])) + " deg"
+        config.observations.obs_cone.radius = "3 deg"
+        config.datasets.type = "3d"
+        config.datasets.stack = True
+        config.datasets.geom.wcs.skydir = {
+            "lon": str(sobs[0].obs_info["RA_PNT"]) + " deg",
+            "lat": str(sobs[0].obs_info["DEC_PNT"]) + " deg",
+            "frame": "icrs",
+        }
+        try:
+            config.datasets.geom.wcs.width = {"width": "5 deg", "height": "5 deg"}
+        except:  # for old gammapy
+            config.datasets.geom.wcs.fov = {"width": "5 deg", "height": "5 deg"}
+        config.datasets.geom.wcs.binsize = "0.02 deg"
+
+        config.datasets.background.method = "fov_background"
+        config.datasets.background.parameters = {"method": "fit"}
+        if args.exclusion_map != "":
+            config.datasets.background.exclusion = f"{args.exclusion_map}"
+        config.datasets.geom.axes.energy.min = "0.01 TeV"
+        config.datasets.geom.axes.energy.max = Emax
+        config.datasets.geom.axes.energy.nbins = 40
+
+        config.datasets.geom.axes.energy_true.min = "0.01 TeV"
+        config.datasets.geom.axes.energy_true.max = Emax
+        config.datasets.geom.axes.energy.nbins = 40
+
+        analysis = Analysis(config)
+        analysis.get_observations()
+        analysis.get_datasets()
+
+        estimator = ExcessMapEstimator(0.1 * u.deg, selection_optional=[])
+        lima_maps = estimator.run(analysis.datasets["stacked"])
+        significance_map = lima_maps["sqrt_ts"]
+        try:
+            excess_map = lima_maps["npred_excess"]
+        except:
+            excess_map = lima_maps["excess"]
+
+        # ~ analysis.datasets["stacked"].peek()
+        # ~ plt.show()
+
+        plt.clf()
+        plt.gcf().set_size_inches(16, 6)
+
+        ax1 = plt.subplot(131, projection=significance_map.geom.wcs)
+        transform = ax1.get_transform("icrs")
+        ax1.scatter(
+            multiplet["RA"], multiplet["DEC"], transform=transform, c="c", marker="x"
+        )
+        # ax1.scatter(
+        #     target.ra, target.dec, transform=transform, c="m", marker="o", alpha=0.6
+        # )
+        ax1.set_title("Significance map")
+        significance_map.plot(ax=ax1, add_cbar=True)
+
+        ax2 = plt.subplot(132, projection=excess_map.geom.wcs)
+        transform = ax2.get_transform("icrs")
+        ax2.scatter(
+            multiplet["RA"], multiplet["DEC"], transform=transform, c="c", marker="x"
+        )
+        # ax2.scatter(
+        #     target.ra, target.dec, transform=transform, c="m", marker="o", alpha=0.6
+        # )
+        ax2.set_title("Excess map")
+        excess_map.plot(ax=ax2, add_cbar=True)
+
+        ax3 = plt.subplot(133, projection=excess_map.geom.wcs)
+        transform = ax3.get_transform("icrs")
+        ax3.scatter(
+            multiplet["RA"],
+            multiplet["DEC"],
+            transform=transform,
+            c="c",
+            marker="o",
+            alpha=0.6,
+        )
+        # ax3.scatter(
+        #     target.ra, target.dec, transform=transform, c="m", marker="o", alpha=0.6
+        # )
+        ax3.set_title("Counts")
+        analysis.datasets[0].counts.sum_over_axes().plot(ax=ax3, add_cbar=True)
+        interval = [
+            [
+                Time(multiplet["TIME"][0]) - TimeDelta(args.dt_margin, format="sec"),
+                Time(multiplet["TIME"][-1]) + TimeDelta(args.dt_margin, format="sec"),
+            ]
+        ]
+
+        plt.gcf().suptitle(
+            "Multiplet %s ; Emax = %s ; T = [ %s %s ]"
+            % (m_i, Emax, interval[0][0], interval[0][1])
+        )
+        plt.gcf().suptitle(
+            "Multiplet %s ; Emax = %s ; Nmax = %s ; dt = %0.0f ms ; run = %s"
+            % (m_i, Emax, N_multiplets, duration.to_value("ms"), multiplet["OBS_ID"])
+        )
+        # plt.savefig(prefix / ("run_%s.%s" % (multiplet["OBS_ID"], args.fmt)))
+        plt.savefig(f"{prefix}/run_{multiplet['OBS_ID']}_mi_{m_i}")
+    # for m_i, multiplet in enumerate(multiplets):
+    #     data_store = DataStore.from_dir(args.data_store)
+    #     time_range = [
+    #         Time(multiplet["TIME"][0]) - TimeDelta(args.run_duration, format="sec"),
+    #         Time(multiplet["TIME"][0]) + TimeDelta(args.run_duration, format="sec"),
+    #     ]
+    #     selection = dict(type="time_box", time_range=time_range)
+    #     obs_table = data_store.obs_table.select_observations(selection)
+
+    #     duration = Time(multiplet["TIME"][-1]) - Time(multiplet["TIME"][0])
+    #     print("Run number: " + str(obs_table["OBS_ID"].tolist()))
+    #     print("Burst duration: %.01f s" % duration.sec)
+
+    #     Emax = str(np.max(multiplet["ENERGY"])) + " TeV"
+    #     print("Emax = " + Emax)
+
+    #     obs_list = obs_table["OBS_ID"]
+    #     sobs = data_store.get_observations(obs_list)
+    #     events = [data_store.obs(obs).events for obs in obs_list]
+    #     # print(events[0].time.datetime64)
+
+    #     config = AnalysisConfig()
+    #     config.observations.obs_ids = obs_table["OBS_ID"].tolist()
+    #     config.observations.datastore = args.data_store
+    #     # We define the cone search parameters
+    #     config.observations.obs_cone.frame = "icrs"
+    #     config.observations.obs_cone.lon = str(np.mean(multiplet["RA"])) + " deg"
+    #     config.observations.obs_cone.lat = str(np.mean(multiplet["DEC"])) + " deg"
+    #     config.observations.obs_cone.radius = "3 deg"
+    #     config.datasets.type = "3d"
+    #     config.datasets.stack = True
+    #     config.datasets.geom.wcs.skydir = {
+    #         "lon": str(np.mean(multiplet["RA"])) + " deg",
+    #         "lat": str(np.mean(multiplet["DEC"])) + " deg",
+    #         "frame": "icrs",
+    #     }
+    #     try:
+    #         config.datasets.geom.wcs.width = {"width": "1 deg", "height": "1 deg"}
+    #     except:  # for old gammapy
+    #         config.datasets.geom.wcs.fov = {"width": "1 deg", "height": "1 deg"}
+    #     config.datasets.geom.wcs.binsize = "0.005 deg"
+
+    #     config.datasets.background.method = "fov_background"
+    #     config.datasets.background.parameters = {"method": "fit"}
+    #     if args.exclusion_map != "":
+    #         config.datasets.background.exclusion = f"{args.exclusion_map}"
+    #     config.datasets.geom.axes.energy.min = "0.01 TeV"
+    #     config.datasets.geom.axes.energy.max = Emax
+    #     config.datasets.geom.axes.energy.nbins = 40
+
+    #     config.datasets.geom.axes.energy_true.min = "0.01 TeV"
+    #     config.datasets.geom.axes.energy_true.max = Emax
+    #     config.datasets.geom.axes.energy.nbins = 40
+
+    #     analysis = Analysis(config)
+
+    #     analysis.get_observations()
+
+    #     interval = [
+    #         [
+    #             Time(multiplet["TIME"][0]) - TimeDelta(args.dt_margin, format="sec"),
+    #             Time(multiplet["TIME"][-1]) + TimeDelta(args.dt_margin, format="sec"),
+    #         ]
+    #     ]
+    #     # analysis.observations = analysis.observations.select_time(interval)
+
+    #     analysis.get_datasets()
+
+    #     estimator = ExcessMapEstimator(0.05 * u.deg, selection_optional=[])
+    #     lima_maps = estimator.run(analysis.datasets["stacked"])
+    #     significance_map = lima_maps["sqrt_ts"]
+    #     try:
+    #         excess_map = lima_maps["npred_excess"]
+    #     except:
+    #         excess_map = lima_maps["excess"]
+
+    #     # ~ analysis.datasets["stacked"].peek()
+    #     # ~ plt.show()
+
+    #     plt.clf()
+    #     plt.gcf().set_size_inches(16, 6)
+
+    #     ax1 = plt.subplot(131, projection=significance_map.geom.wcs)
+    #     transform = ax1.get_transform("icrs")
+    #     ax1.scatter(
+    #         multiplet["RA"], multiplet["DEC"], transform=transform, c="c", marker="x"
+    #     )
+    #     # ax1.scatter(
+    #     #     target.ra, target.dec, transform=transform, c="m", marker="o", alpha=0.6
+    #     # )
+    #     ax1.set_title("Significance map")
+    #     significance_map.plot(ax=ax1, add_cbar=True)
+
+    #     ax2 = plt.subplot(132, projection=excess_map.geom.wcs)
+    #     transform = ax2.get_transform("icrs")
+    #     ax2.scatter(
+    #         multiplet["RA"], multiplet["DEC"], transform=transform, c="c", marker="x"
+    #     )
+    #     # ax2.scatter(
+    #     #     target.ra, target.dec, transform=transform, c="m", marker="o", alpha=0.6
+    #     # )
+    #     ax2.set_title("Excess map")
+    #     excess_map.plot(ax=ax2, add_cbar=True)
+
+    #     ax3 = plt.subplot(133, projection=excess_map.geom.wcs)
+    #     transform = ax3.get_transform("icrs")
+    #     ax3.scatter(
+    #         multiplet["RA"],
+    #         multiplet["DEC"],
+    #         transform=transform,
+    #         c="c",
+    #         marker="o",
+    #         alpha=0.6,
+    #     )
+    #     # ax3.scatter(
+    #     #     target.ra, target.dec, transform=transform, c="m", marker="o", alpha=0.6
+    #     # )
+    #     ax3.set_title("Counts")
+    #     analysis.datasets[0].counts.sum_over_axes().plot(ax=ax3, add_cbar=True)
+
+    #     plt.gcf().suptitle(
+    #         "Multiplet %s ; Emax = %s ; T = [ %s %s ]"
+    #         % (m_i, Emax, interval[0][0], interval[0][1])
+    #     )
+    #     plt.gcf().suptitle(
+    #         "Multiplet %s ; Emax = %s ; Nmax = %s ; dt = %0.0f s ; run = %s"
+    #         % (m_i, Emax, N_multiplets, duration.sec, obs_table["OBS_ID"].tolist()[0])
+    #     )
+    #     plt.savefig(
+    #         prefix / ("run_%s.%s" % (obs_table["OBS_ID"].tolist()[0], args.fmt))
+    #     )
+
+    # # ~ config.datasets.background.exclusion = exclusion_mask_path
+
+    # # ~ # We now fix the energy axis for the counts map
+    # # ~ config.datasets.geom.axes.energy.min = "0.1 TeV"
+    # # ~ config.datasets.geom.axes.energy.max = "1 TeV"
+    # # ~ config.datasets.geom.axes.energy.nbins = 10
+
+    # # ~ # We now fix the energy axis for the IRF maps (exposure, etc)
+    # # ~ config.datasets.geom.axes.energy_true.min = "0.1 TeV"
+    # # ~ config.datasets.geom.axes.energy_true.max = "1 TeV"
+    # # ~ config.datasets.geom.axes.energy.nbins = 40
