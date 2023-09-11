@@ -418,7 +418,7 @@ class Multiplets:
     def addRMS(self):
         """
         Add a measure for the angular spread of the multiplet to Multiplets.table. Columname: ANGULAR_MEASURE_DEG
-        This is done by calculating the mean distance of the multiplet members to the median multiplet coordinate.
+        This is done by taking the .68 percentile of the distances between the member photons and the mean coordinate.
 
         """
         measure = []
@@ -479,6 +479,9 @@ class Reduced:
         'EXP_CORRECTED_P'
         'BERNOULLI_P'
         'BERNOULLI_SIGMA'
+
+        (added by Reduced.addFlux())
+        'FLUX_ERGS_PER_SECOND_CM2'
 
 
 
@@ -827,11 +830,52 @@ class Reduced:
 
         self.reduced["BERNOULLI_SIGMA"] = n_sigmas(self.reduced["BERNOULLI_P"])
 
+    def addFlux(self) -> None:
+        """
+        Adds a measure  of the observed energy content of the multiplet analogous to flux to Reduced.reduced.
+
+        Adds the following columns to Reduced.reduced:
+            FLUX_ERGS_PER_SECOND_CM2: the flux in ergs per second per cm^2
+        """
+        # 1 TEV = 1.602 ERG
+        # 1 s = 1e9 ns
+        # hess collection area: 1e9 cm^2
+        self.reduced["FLUX_ERGS_PER_SECOND_CM2"] = [
+            np.sum(cand["ENERGY"]) / cand["dt"] * 1.602 * 1e9 / 1e9
+            for cand in tqdm(self.reduced)
+        ]
+
     def getCandidate(self, obs_id: int):
+        """
+        Macro of a row selection by OBS_ID.
+        """
         return self.reduced[self.reduced["OBS_ID"] == obs_id]
 
 
 class Candidate:
+    """
+    Small class to perform individual candidate methods.
+
+    Attributes
+    ----------
+
+    mplet : astropy.table.Row
+        Row of the multiplet
+
+    obs_id : int
+        Observation id of the multiplet
+
+    obs : gammapy.data.Observation
+        Observation of the multiplet
+
+    Methods
+    -------
+
+    ToAScatter(max_dist: float = 0.1) -> (matplotlib.figure.Figure, matplotlib.axes.Axes)
+        Plot the photon arrival times as a function of distance to the multiplet median coordinate.
+
+    """
+
     def __init__(self, row: Row) -> None:
         if type(row) == Table:
             print(f"row is a Table of length {len(row)}, not a row. Taking first!")
@@ -864,27 +908,6 @@ class Candidate:
         ax.scatter(phottable[mask]["TIME"], run_dist[mask], s=4, marker="x")
         ax.set_xlim(self.obs.obs_info["TSTART"], self.obs.obs_info["TSTOP"])
         return fig, ax
-
-
-# def pxl_distance(i1: int, j1: int, i2: int, j2: int) -> float:
-#     """
-#     Compute Euclidean pixel distance between two pixels.
-
-#     Parameters
-#     ----------
-
-#     i1, j1 : int
-#         Pixel coordinates of the first pixel
-
-#     i2, j2 : int
-#         Pixel coordinates of the second pixel
-
-#     Returns
-#     -------
-#     float
-#         Euclidean pixel distance
-#     """
-#     return np.sqrt(np.square(i1 - j1) + np.square(i2 - j2))
 
 
 def get_contained_indices(Nh: int, Nv: int, coord=tuple[int], center: tuple[int] = ()):
@@ -1071,17 +1094,9 @@ def getDataStores():
     return [hess1_datastore, hess1u_datastore]
 
 
-def main():
-    print("Mplets")
-    mplets = bare_load_mplets()
-    print("Mplet manips")
-    rdpath = mplet_manips(mplets)
-    print("Reduced manips")
-    reduced_manips(rdpath)
-
-
 def bare_load_mplets(
     prefix: str = "/lustre/fs22/group/hess/user/wybouwt/full_scanner_survey/nmax4_da_increased",
+    Nsearch: int = 4,
 ) -> Multiplets:
     bands = [
         "u_5_15",
@@ -1118,12 +1133,12 @@ def bare_load_mplets(
     mplets = mplet_list[0]
     mplets.appendMultiplets(*mplet_list[1:])
 
-    with open("testing/pkl_jugs/n4/mplets_bare.pkl", "wb") as f:
+    with open(f"testing/pkl_jugs/n{Nsearch}/mplets_bare.pkl", "wb") as f:
         dill.dump(mplets, f)
     return mplets
 
 
-def mplet_manips(mplets: Multiplets) -> str:
+def mplet_manips(mplets: Multiplets, Nsearch: int = 4) -> str:
     from tevcat import TeVCat
 
     tevcat = TeVCat()
@@ -1140,7 +1155,7 @@ def mplet_manips(mplets: Multiplets) -> str:
 
     mplets.createReduced()
 
-    redpath = "testing/pkl_jugs/n4/reduced0.pkl"
+    redpath = f"testing/pkl_jugs/n{Nsearch}/reduced0.pkl"
     with open(redpath, "wb") as f:
         dill.dump(mplets.reduced, f)
     print(
@@ -1149,13 +1164,13 @@ def mplet_manips(mplets: Multiplets) -> str:
     return redpath
 
 
-def reduced_manips(redpath: str):
+def reduced_manips(redpath: str, Nsearch: int = 4):
     rd = Reduced(redpath)
     rd.loadObservations(per_ds=True)
     rd.loadNavtable()
 
     print("dumping navtable")
-    with open("testing/pkl_jugs/n4/navtab.pkl", "wb") as f:
+    with open(f"testing/pkl_jugs/n{Nsearch}/navtab.pkl", "wb") as f:
         dill.dump(rd.navtable, f)
 
     print("Adding PNT metadata.")
@@ -1172,95 +1187,8 @@ def reduced_manips(redpath: str):
         exposure: WcsNDMap = dill.load(f).exposure
     rd.addExposureCorrectedP(exposure)
 
-    with open("testing/pkl_jugs/n4/reduced_complete.pkl", "wb") as f:
+    with open(f"testing/pkl_jugs/n{Nsearch}/reduced_complete.pkl", "wb") as f:
         dill.dump(rd.reduced, f)
-
-
-# def main_correctP(reduced_path: str):
-#     rd = Reduced(reduced_path)
-#     print("Loading observations")
-#     rd.loadObservations()
-#     print("Loading exposure")
-#     with open(
-#         "testing/mc_scanner/real_dataset_dumps/hbl/stacked_datasets.pkl", "rb"
-#     ) as f:
-#         exposure: WcsNDMap = dill.load(f).exposure
-#     print("Starting exposure correction")
-#     rd.addExposureCorrectedP(exposure)
-
-#     print("dumping rd.reduced")
-#     with open("testing/pkl_jugs/reduced_correctedP_020923.pkl", "wb") as f:
-#         dill.dump(rd.reduced, f)
-
-
-# def setup_mplets():
-#     bands = [
-#         "u_5_15",
-#         "u_15_25",
-#         "u_25_35",
-#         "u_35_45",
-#         "u_45_55",
-#         "u_55_65",
-#         "u_65_75",
-#         "u_75_90",
-#         "l_15_5",
-#         "l_25_15",
-#         "l_35_25",
-#         "l_45_35",
-#         "l_55_45",
-#         "l_65_55",
-#         "l_75_65",
-#         "l_90_75",
-#         "center",
-#     ]
-#     versions = ["hess1", "hess1u"]
-#     paths = [
-#         f"/lustre/fs22/group/hess/user/wybouwt/full_scanner_survey/nmax4_da_increased/{version}/{band}"
-#         for band in bands
-#         for version in versions
-#     ]
-#     # mplets = scani.Multiplets(paths[0])
-#     # mplets.appendMultiplets(*[scani.Multiplets(path) for path in paths[1:]])
-#     mplet_list = [Multiplets(path) for path in paths]
-#     Nmax_list = [np.unique(mplets.table["Nmax"].data) for mplets in mplet_list]
-
-#     for i in range(len(Nmax_list)):
-#         print(i, Nmax_list[i])
-
-#     # unicorns = [9, 18]
-#     # unicorns = [7, 16, 17, 24, 25, 32]
-#     for mplet in mplet_list:
-#         mplet.objectifyColumns()
-
-#     mplets = mplet_list[0]
-#     mplets.appendMultiplets(*mplet_list[1:])
-
-#     from tevcat import TeVCat
-
-#     tevcat = TeVCat()
-#     mplets.searchTeVCat(tevcat.sources)
-
-#     datastores = getDataStores()
-#     ds_mplet_indices = [
-#         in_which_container(id, containers=[ds.obs_ids for ds in datastores])
-#         for id in tqdm(mplets.table["OBS_ID"].data)
-#     ]
-
-#     mplets.table["DS_INDEX"] = ds_mplet_indices
-#     mplets.addRMS()
-
-#     print("Dumping the mplets object.")
-#     with open("testing/pkl_jugs/n4/mplets.pkl", "wb") as f:
-#         dill.dump(mplets, f)
-
-#     print("Creating reduced dataset")
-#     mplets.createReduced()
-#     print(
-#         f"unique obs ids in reduced dataset: {len(np.unique(mplets.reduced['OBS_ID'].data))}"
-#     )
-#     print("Dumping bare reduced")
-#     with open("testing/pkl_jugs/n4/reduced_bare.pkl", "wb") as f:
-#         dill.dump(mplets.reduced, f)
 
 
 def main_aitov(mplets):
@@ -1310,6 +1238,17 @@ def main_aitov(mplets):
     ax.tick_params(grid_alpha=0.1, colors="gray", zorder=3, labelsize="x-small")
     fig.legend(loc="lower right")
     fig.savefig("testing/figures/combined/aitoff.pdf")
+
+
+def main():
+    print("Mplets")
+    mplets = bare_load_mplets(
+        "/lustre/fs22/group/hess/user/wybouwt/full_scanner_survey", 3
+    )
+    print("Mplet manips")
+    rdpath = mplet_manips(mplets, 3)
+    print("Reduced manips")
+    reduced_manips(rdpath, 3)
 
 
 if __name__ == "__main__":
