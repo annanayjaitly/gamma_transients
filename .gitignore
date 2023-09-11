@@ -1,7 +1,5 @@
 .vscode
-testing/figures
-testing/pkl_jugs
-testing/mc_scanner
+testing
 secrets
 
 # Byte-compiled / optimized / DLL files
