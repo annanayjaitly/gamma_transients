@@ -1252,4 +1252,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # main()
+    with open("testing/pkl_jugs/n4/mplets_bare.pkl", "rb") as f:
+        mplets: Multiplets = dill.load(f)
+
+    from tevcat import TeVCat
+
+    tc = TeVCat()
+    mplets.searchTeVCat(tc.sources)
+
+    with open("testing/pkl_jugs/n4/mplets_with_tevcat.pkl", "wb") as f:
+        dill.dump(mplets, f)
+    print("succes")
