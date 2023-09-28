@@ -1227,17 +1227,17 @@ def main_aitov(mplets):
         np.radians(5),
         # color="k",
         alpha=0.2,
-        label=r"$\mathrm{GLAT}: \pm 5\mathrm{deg}$",
+        label=r"$\left|b\right| < 5\degree$",
     )
     ax.grid(True)
-    ax.set_xlabel(r"MEDIAN_GLON [deg]")
-    ax.set_ylabel(r"MEDIAN_GLAT [deg]")
-    fig.suptitle(
-        r"Skymap of multiplets, TeVCat sources ($\mathrm{distance} < 0.2\mathrm{deg}$) excluded"
-    )
+    ax.set_xlabel(r"$l~ [\degree]$")
+    ax.set_ylabel(r"$b~ [\degree]$")
+    # fig.suptitle(
+    #     r"Skymap of multiplets, TeVCat sources ($\mathrm{distance} < 0.2\degree$) excluded"
+    # )
     ax.tick_params(grid_alpha=0.1, colors="gray", zorder=3, labelsize="x-small")
     fig.legend(loc="lower right")
-    fig.savefig("testing/figures/combined/aitoff.pdf")
+    return fig, ax
 
 
 def main():
@@ -1253,14 +1253,7 @@ def main():
 
 if __name__ == "__main__":
     # main()
-    with open("testing/pkl_jugs/n4/mplets_bare.pkl", "rb") as f:
-        mplets: Multiplets = dill.load(f)
-
-    from tevcat import TeVCat
-
-    tc = TeVCat()
-    mplets.searchTeVCat(tc.sources)
-
-    with open("testing/pkl_jugs/n4/mplets_with_tevcat.pkl", "wb") as f:
-        dill.dump(mplets, f)
-    print("succes")
+    with open("testing/pkl_jugs/n4/mplets_with_tevcat.pkl", "rb") as f:
+        mplets = dill.load(f)
+    fig, ax = main_aitov(mplets)
+    fig.savefig("testing/figures/aitov.png", facecolor="white", dpi=300)
