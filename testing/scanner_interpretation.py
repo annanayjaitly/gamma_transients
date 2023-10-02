@@ -1208,7 +1208,7 @@ def main_aitov(mplets):
         marker="v",
         zorder=1,
         color="m",
-        label=r"$N=4, dt < 1\mathrm{s}$",
+        label=r"$N_m \geq 4, dt < 1\mathrm{s}$",
     )
     current_mask = nosource_mask * Nmin5_mask
     ax.scatter(
@@ -1218,7 +1218,7 @@ def main_aitov(mplets):
         marker="^",
         zorder=2,
         color="c",
-        label=r"$N=5, dt < 3\mathrm{s}$",
+        label=r"$N_m \geq 5, dt < 3\mathrm{s}$",
     )
 
     ax.fill_between(
@@ -1236,6 +1236,8 @@ def main_aitov(mplets):
     #     r"Skymap of multiplets, TeVCat sources ($\mathrm{distance} < 0.2\degree$) excluded"
     # )
     ax.tick_params(grid_alpha=0.1, colors="gray", zorder=3, labelsize="x-small")
+    ax.set_xticklabels(ax.get_xticklabels()[::-1])
+
     fig.legend(loc="lower right")
     return fig, ax
 
