@@ -7,8 +7,6 @@ import argparse
 
 from astropy.coordinates import SkyCoord
 from gammapy.data import DataStore
-from sys import path
-from pprint import pprint
 
 from gamma_transients import core
 from tqdm import tqdm
@@ -248,5 +246,3 @@ with open(fname, "wb") as fl:
 if args.verbose:
     print(t)
     # print(t_)
-# else:
-#     print("No multiplets found")

@@ -9,6 +9,8 @@ from astropy.table import Table, vstack
 from .photon import Photon, PhotonSim
 from .smallest_enc_circ import make_circle
 
+from typing import Union
+
 
 def in_(p, m):
     """
@@ -38,14 +40,14 @@ def check(m, dt, da):
     return (m[-1].t - m[0].t < dt) and make_circle(points)[2] * 2 < da
 
 
-def f_N(photons, multiplets, dt, da, Nmin: int = 2, Nmax: int = None, verbose=False):
+def f_N(photons, multiplets, dt, da, Nmin: int = 2, Nmax: Union[int, None] = None, verbose=False):
     """
     input: f(photons,[[p] for p in photons], dt in nanosec, da in deg, Nmin, Nmax)
     The function stops when there are no higher-order multiplets or when Nmax is reached.
     """
     multiplets_cycle = []
     if Nmax is not None:
-        N1 = Nmax - 1  # WHY ??
+        N1 = Nmax - 1
         if verbose:
             print("f will be called max. ", Nmax, " times")
     else:
@@ -66,9 +68,7 @@ def f_N(photons, multiplets, dt, da, Nmin: int = 2, Nmax: int = None, verbose=Fa
         if len(multiplets_cycle) > 0:
             if verbose:
                 print(f"f is called -> multiplets number: {len(multiplets_cycle)}")
-            return f_N(
-                photons, multiplets_cycle, dt, da, Nmin, Nmax
-            )  # changed N1 to Nmax
+            return f_N(photons, multiplets_cycle, dt, da, Nmin, Nmax)  # changed N1 to Nmax
         else:
             return multiplets
     else:
@@ -82,8 +82,9 @@ def multiplet_scanner(
     r_deg,
     r_area,
     Nmin: int = 2,
-    Nmax: int = None,
-    verbose=False,
+    Nmax: Union[int, None] = None,
+    verbose: bool = False,
+    remove_zero_coordinates: bool = False
 ):
     """Scans for Nmax-multiplets in specified sky region around target, blind search not implemented yet.
 
@@ -123,9 +124,9 @@ def multiplet_scanner(
             events_table = events_table[
                 target.separation(events_table["coord"]).degree <= r_area
             ]  # select events within r_area of source
-            events_table = events_table[
-                (events_table["RA"] != 0.0) & (events_table["DEC"] != 0.0)
-            ]
+
+            if remove_zero_coordinates:
+                events_table = events_table[(events_table["RA"] != 0.0) & (events_table["DEC"] != 0.0)]
 
             n_scanned += len(events_table)
 
@@ -243,7 +244,7 @@ def multiplet_scanner_simulated_table(
     r_deg,
     r_area,
     Nmin: int = 2,
-    Nmax: int = None,
+    Nmax: Union[int, None] = None,
     verbose=False,
 ):
     """Scans for Nmax-multiplets in specified sky region around target, blind search not implemented yet.
@@ -387,7 +388,7 @@ def multiplet_scanner_simulated_table(
 
 
 def worker(
-    target, event_list, dt_threshold, r_deg, r_area, Nmin: int = 2, Nmax: int = None
+    target, event_list, dt_threshold, r_deg, r_area, Nmin: int = 2, Nmax: Union[int, None] = None, remove_zero_coordinates: bool = False
 ):
     """A single instance of the muktiplet scanner for one observation run, used in parallelization.
 
@@ -418,9 +419,9 @@ def worker(
     events_table = events_table[
         target.separation(events_table["coord"]).degree <= r_area
     ]  # select events within r_area of source
-    events_table = events_table[
-        (events_table["RA"] != 0.0) & (events_table["DEC"] != 0.0)
-    ]
+
+    if remove_zero_coordinates:
+        events_table = events_table[(events_table["RA"] != 0.0) & (events_table["DEC"] != 0.0)]
 
     events_table.sort(keys="TIME")  # sort events by timestamp
 
@@ -518,7 +519,7 @@ def scanner_parallel(
     r_deg,
     r_area,
     Nmin: int = 2,
-    Nmax: int = None,
+    Nmax: Union[int, None] = None,
     verbose=False,
 ):
     """Runs the multiplet scanner in parallel for each observation run. Initialises the worker function for each run and stacks the results when all are done.
@@ -695,7 +696,6 @@ def da_dt_hist2d_plotter(table, bins=50):
     ax0.set_xlabel("log10[dt/ns]", weight="bold")
     ax0.set_facecolor("dimgrey")
 
-    print("lognorm")
     figure.colorbar(im0, ax=ax0, norm=colors.LogNorm())
 
     plt.show()
@@ -762,7 +762,6 @@ def triplet_hist2d_saver(table, bins, position_src=None):
         range_ra = np.max(np.abs(np.array(np.max(table["RA"]), np.min(table["RA"]))))
         range_dec = np.max(np.abs(np.array(np.max(table["DEC"]), np.min(table["DEC"]))))
         range_var = np.max([range_ra, range_dec])
-        print(range_var)
         range_ = None
 
     N = table["RA"].shape[1]
