@@ -433,7 +433,6 @@ class Multiplets:
                 )
                 for row in tqdm(self.table)
             ]
-        print("Finalising rms futures")
         for future in tqdm(future_rms):
             try:
                 result = future.result()
@@ -565,7 +564,6 @@ class Reduced:
                 {int(obs.ids[index]): index for index in range(len(obs))}
             )
 
-        print("Building navigation table")
         navigation_table = Table(
             [
                 range(len(self.reduced)),
@@ -575,7 +573,6 @@ class Reduced:
             names=("MPLET_INDEX", "OBS_ID", "DS_INDEX"),
             dtype=[int, int, int],
         )
-        print("completing navigation table")
         temp = Column(
             name="OBS_INDEX_WITHIN_DS",
             data=list(map(obs_id_to_index_per_ds.get, navigation_table["OBS_ID"].data)),
@@ -597,7 +594,7 @@ class Reduced:
         if ("BKG_DT_LAMBDA" not in self.reduced.colnames) or (
             "MPLET_DT_LAMBDA" not in self.reduced.colnames
         ):
-            print("Haven't found exponential fit parameters, will now start fitting.")
+            print("Haven't found exponential fit parameters, starting fit.")
             self.add_exponential_dt_fits(
                 get_datastores(), navpath="testing/pkl_jugs/navigationtable.pkl"
             )
@@ -643,7 +640,6 @@ class Reduced:
         BKG EXPON FIT
         ==============
         """
-        print("Getting photon rates.")
         expon_fit_parameters = []
         bkg_photon_count = []
 
@@ -661,7 +657,6 @@ class Reduced:
                 )
                 for row in self.navtable
             ]
-        print("Finalising run bkg fit futures")
         for future in tqdm(future_fitparams):
             try:
                 result, nphot = future.result()
@@ -680,7 +675,6 @@ class Reduced:
         SIGNAL EXPON FIT
         ==============
         """
-        print("Starting mplet expon fit")
         mplet_expon_fit_parameters = []
         with cf.ProcessPoolExecutor(workercount) as ex:
             future_fitparams = [
@@ -691,7 +685,6 @@ class Reduced:
                 )
                 for row in self.reduced
             ]
-        print("Finalising mplet dt fit futures")
         for future in tqdm(future_fitparams):
             try:
                 result = 1.0 / future.result()[1]
@@ -729,7 +722,6 @@ class Reduced:
                 )
                 for row in tqdm(self.navtable)
             ]
-        print("Finalising MPLET FOV DIST futures")
         for future in tqdm(future_distances):
             try:
                 result = future.result()
@@ -784,16 +776,7 @@ class Reduced:
             BERNOULLI_SIGMA: p value converted into standard deviations.
         """
         bell_fraction = []
-        print("Getting total runcount")
         runcount = get_total_runcount(self.datastores)
-        print("Starting multiprocessed bell_ratio.")
-        # get_bell_ratio(
-        #     exposure,
-        #     SkyCoord(*exposure.geom.center_coord).directional_offset_by(
-        #         0.0 * u.deg, self.reduced[0]["PNT_DISTANCE"] * u.deg
-        #     ),
-        #     self.reduced[0]["da"],
-        # )
         with cf.ProcessPoolExecutor(int(cpu_count() / 2)) as ex:
             future_expfactors = [
                 ex.submit(
@@ -806,7 +789,6 @@ class Reduced:
                 )
                 for row in tqdm(self.reduced)
             ]
-        print("Analysing futures")
         for future in future_expfactors:
             try:
                 result = future.result()
@@ -815,7 +797,6 @@ class Reduced:
                 result = np.nan
             bell_fraction.append(result)
 
-        print("Saving to Reduced.reduced")
         bell_fraction = np.asarray(bell_fraction, dtype=np.double)
 
         self.reduced["BELL_FRACTION"] = bell_fraction
@@ -876,7 +857,7 @@ class Candidate:
 
     def __init__(self, row: Row) -> None:
         if type(row) == Table:
-            print(f"row is a Table of length {len(row)}, not a row. Taking first!")
+            print(f"row is a Table of length {len(row)}, not a row. Taking the first!")
             self.mplet = row[0]
         else:
             self.mplet = row
@@ -935,7 +916,7 @@ def get_contained_indices(Nh: int, Nv: int, coord=tuple[int], center: tuple[int]
             f"Coord should be a tuple of length 2 but has length {len(coord)}"
         )
     if len(center) != 2:
-        print("Making new center")
+        print(f"center is not appropriate length of 2 (current length: {len(center)}), making new at (Nh/2,Nv/2)")
         center = (int(Nh / 2), int(Nv / 2))
     x, y = np.meshgrid(np.arange(Nh), np.arange(Nv))
     distances = np.sqrt(np.square(x - center[0]) + np.square(y - center[1]))
@@ -1167,22 +1148,21 @@ def reduced_manips(redpath: str, Nsearch: int = 4):
     rd.load_observations(per_ds=True)
     rd.load_navtable()
 
-    print("dumping navtable")
     with open(f"testing/pkl_jugs/n{Nsearch}/navtab.pkl", "wb") as f:
         dill.dump(rd.navtable, f)
 
-    print("Adding PNT metadata.")
     rd.add_pnt_altitude()
     rd.add_pnt_distance()
-    print("Adding exponential fits.")
+
     rd.add_exponential_dt_fits()
-    print("Adding Lambda ratio significance.")
+
     rd.add_lambda_ratio_significance()
-    print("Correcting for exposure.")
+
     with open(
         "testing/mc_scanner/real_dataset_dumps/hbl/stacked_datasets.pkl", "rb"
     ) as f:
         exposure: WcsNDMap = dill.load(f).exposure
+
     rd.add_exposure_corrected_p(exposure)
 
     with open(f"testing/pkl_jugs/n{Nsearch}/reduced_complete.pkl", "wb") as f:
@@ -1239,13 +1219,10 @@ def main_aitov(mplets):
 
 
 def main():
-    print("Mplets")
     mplets = bare_load_mplets(
         "/lustre/fs22/group/hess/user/wybouwt/full_scanner_survey", 3
     )
-    print("Mplet manips")
     rdpath = mplet_manips(mplets, 3)
-    print("Reduced manips")
     reduced_manips(rdpath, 3)
 
 
