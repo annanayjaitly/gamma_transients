@@ -82,7 +82,7 @@ def convert_angle(angle: float) -> float:
     return angle
 
 
-def objectifyColumn(tab: Table, colname: str) -> None:
+def objectify_column(tab: Table, colname: str) -> None:
     """
     Turn the dtype of a column into `object`
 
@@ -101,7 +101,7 @@ def objectifyColumn(tab: Table, colname: str) -> None:
     tab[colname][0].pop()
 
 
-def radec_to_SimbadCircle(ra: float, dec: float, radius_deg=0.2) -> str:
+def radec_to_simbad_circle(ra: float, dec: float, radius_deg=0.2) -> str:
     """
     Return a simbad criteria string for a circle around a SkyCoord
 
@@ -227,9 +227,9 @@ class Multiplets:
 
     def __init__(self, path: str) -> None:
         self.paths = [path]
-        self.loadMpletsBare(path)
+        self.load_mplets_bare(path)
 
-    def loadMpletsBare(self, path) -> None:
+    def load_mplets_bare(self, path) -> None:
         """
         load the multiplets from a path returned by the transient tool.
 
@@ -246,7 +246,7 @@ class Multiplets:
             self.table = dill.load(f)
         self.table.sort("Nmax")
 
-    def addCoordinateInfo(self) -> None:
+    def add_coordinate_info(self) -> None:
         """
         Add coordinate information (MEDIAN_RA, MEDIAN_DEC, SkyCoord, MEDIAN_GLAT, MEDIAN_GLON) to Multiplets.table
         """
@@ -262,7 +262,7 @@ class Multiplets:
         self.table["MEDIAN_GLAT"] = self.table["SkyCoord"].galactic.b
         self.table["MEDIAN_GLON"] = self.table["SkyCoord"].galactic.l
 
-    def getAitoffFigure(self, bounds_deg: list = []) -> (figure.Figure, axes.Axes):
+    def get_aitov_figure(self, bounds_deg: list = []) -> (figure.Figure, axes.Axes):
         """
         Get a scatterplot of the multiplet coordinats in aitoff projection
 
@@ -308,7 +308,7 @@ class Multiplets:
 
         return fig, ax
 
-    def searchTeVCat(self, sources: list[Source]):
+    def search_tevcat(self, sources: list[Source]):
         """
         Perform a nearest neighbour search (k-dimensional tree) in the TeVCat database from the median multiplet coordinate.
 
@@ -335,9 +335,9 @@ class Multiplets:
         )
         identified_sources = np.asarray(sources)[indices]
 
-        self.addTevCatSourceInfo(identified_sources, distances)
+        self.add_tevcat_source_info(identified_sources, distances)
 
-    def addTevCatSourceInfo(
+    def add_tevcat_source_info(
         self, identified_sources: list[Source], distances: list[float]
     ) -> None:
         """
@@ -365,7 +365,7 @@ class Multiplets:
     def __len__(self) -> int:
         return len(self.table)
 
-    def appendMultiplets(self, *others):
+    def append_multiplets(self, *others):
         """
         Append other Multiplets to self. Used to combine multiplets from different datasets.
 
@@ -376,9 +376,9 @@ class Multiplets:
         )
         self.table = Table.from_pandas(df)
         self.table.sort("OBS_ID")
-        self.addCoordinateInfo()
+        self.add_coordinate_info()
 
-    def createReduced(
+    def create_reduced(
         self,
         min_source_dist_deg: float = 0.1,
         galactic_plane_halfwidth_deg: float = 5.0,
@@ -402,18 +402,18 @@ class Multiplets:
         self.reduced = self.table[noTeVCat_mask * xgal_mask]
         print(f"Reducement of {len(self)} to {len(self.reduced)} rows.")
 
-    def objectifyColumns(self) -> None:
+    def objectify_columns(self) -> None:
         """
         Turn relevant Multiplets.table columns into dtype `object`. To be used on Multiplets that contain but one multiplicity, causing a merge of columns via Multiplets.appendMultiplets with different multiplicities to fail.
 
         """
         for name in ["ID", "RA", "DEC", "TIME", "ENERGY"]:
-            objectifyColumn(self.table, name)
+            objectify_column(self.table, name)
 
-    def setReduced(self, reduced: Table):
+    def set_reduced(self, reduced: Table):
         self.reduced = reduced
 
-    def addRMS(self):
+    def add_rms(self):
         """
         Add a measure for the angular spread of the multiplet to Multiplets.table. Columname: ANGULAR_MEASURE_DEG
         This is done by taking the .68 percentile of the distances between the member photons and the mean coordinate.
@@ -505,7 +505,7 @@ class Reduced:
         with open(path, "rb") as f:
             self.reduced = dill.load(f)
 
-    def loadObservations(self, per_ds: bool = False) -> None:
+    def load_observations(self, per_ds: bool = False) -> None:
         """
         Load the datastores to Reduced.datastores and the observations to Reduced.observation_per_ds, if per_ds is True.
 
@@ -515,7 +515,7 @@ class Reduced:
         per_ds : bool (default: False)
             If True, load the observations per datastore. If False, load all observations.
         """
-        self.datastores = getDataStores()
+        self.datastores = get_datastores()
         if per_ds:
             self.observation_per_ds = [
                 ds.get_observations(
@@ -527,7 +527,7 @@ class Reduced:
                 for i, ds in enumerate(self.datastores)
             ]
 
-    def loadNavtable(self, navpath: str = None) -> None:
+    def load_navtable(self, navpath: str = None) -> None:
         """
         Load the navigation table from a path. If no path is given, make a new one.
 
@@ -542,9 +542,9 @@ class Reduced:
                 self.navtable = dill.load(f)
         except:
             print("Navtab not found, making from scratch.")
-            self.navtable = self.makeNavigationTable()
+            self.navtable = self.make_navtable()
 
-    def makeNavigationTable(self) -> Table:
+    def make_navtable(self) -> Table:
         """
         Make the navigation table from scratch.
 
@@ -584,7 +584,7 @@ class Reduced:
         navigation_table.add_column(temp)
         return navigation_table
 
-    def addLambdaRatioSignificace(self) -> None:
+    def add_lambda_ratio_significance(self) -> None:
         """
         Add a data driven significance to each multiplet. This is the probability of finding N >= Nm photons within burst time given a background rate. The burst time is not assumed to avoid biasing the significance, but rather rates are calculated from exponential fits on the differences in arrival times. (Since counting photons is assumed to be Poisson, the Delta(arrival time) is to be exponentially distributed.)
 
@@ -598,8 +598,8 @@ class Reduced:
             "MPLET_DT_LAMBDA" not in self.reduced.colnames
         ):
             print("Haven't found exponential fit parameters, will now start fitting.")
-            self.addExponentialDtFits(
-                getDataStores(), navpath="testing/pkl_jugs/navigationtable.pkl"
+            self.add_exponential_dt_fits(
+                get_datastores(), navpath="testing/pkl_jugs/navigationtable.pkl"
             )
 
         NormalizedLambda = (
@@ -621,7 +621,7 @@ class Reduced:
             ]
         )
 
-    def addExponentialDtFits(self, radius_deg: float = 0.1):
+    def add_exponential_dt_fits(self, radius_deg: float = 0.1):
         """
         Perform exponential fits on the differences in arrival times for the candidate signal and the local background. Local is interpreted as the support for 68% prob mass of a PSF (taken to be a circular region with (default) radius 0.1 deg) centered around the multiplet median coordinate.
 
@@ -702,7 +702,7 @@ class Reduced:
 
         self.reduced["MPLET_DT_LAMBDA"] = mplet_expon_fit_parameters
 
-    def addDistanceToPNT(self):
+    def add_pnt_distance(self):
         """
         Add the radial distances from the median multiplet coordinate to the pointing coordinates of the observations in which the multiplet is present.
 
@@ -739,7 +739,7 @@ class Reduced:
             distances.append(result)
         self.reduced["PNT_DISTANCE"] = distances
 
-    def addPNTAltitude(self) -> None:
+    def add_pnt_altitude(self) -> None:
         """
         Add the pointing altitude to Reduced.reduced
 
@@ -765,7 +765,7 @@ class Reduced:
         self.reduced["ALT_PNT"] = alt_pnt
         self.reduced["PNT_SOURCE"] = sc
 
-    def addExposureCorrectedP(self, exposure: WcsNDMap) -> None:
+    def add_exposure_corrected_p(self, exposure: WcsNDMap) -> None:
         """
         Add two exposure corrected significances, one multiplies the significance by the ratio of the exposure that is contained in the multiplet region to the total H.E.S.S. exposure , the other considers observing a multiplet as a Bernoulli trial and corrects the significance for the number of trials, being the number of runs available in the datastores (which should be the sampled dataset). Both methods are approximative: each run is assumed to have the same exposure (both in time and area). Values of zero result from the multiplet not being contained in the exposure geometry (very edge of FoV).
 
@@ -828,7 +828,7 @@ class Reduced:
 
         self.reduced["BERNOULLI_SIGMA"] = n_sigmas(self.reduced["BERNOULLI_P"])
 
-    def addFlux(self) -> None:
+    def add_flux(self) -> None:
         """
         Adds a measure  of the observed energy content of the multiplet analogous to flux to Reduced.reduced.
 
@@ -843,7 +843,7 @@ class Reduced:
             for cand in tqdm(self.reduced)
         ]
 
-    def getCandidate(self, obs_id: int):
+    def get_candidate(self, obs_id: int):
         """
         Macro of a row selection by OBS_ID.
         """
@@ -881,7 +881,7 @@ class Candidate:
         else:
             self.mplet = row
         self.obs_id = self.mplet["OBS_ID"]
-        ds = getDataStores()
+        ds = get_datastores()
         try:
             self.obs = ds[0].obs(self.obs_id)
             print("hess1")
@@ -889,7 +889,7 @@ class Candidate:
             self.obs = ds[1].obs(self.obs_id)
             print("hess1u")
 
-    def ToAScatter(self, max_dist: float = 0.1) -> (figure.Figure, axes.Axes):
+    def toa_scatter(self, max_dist: float = 0.1) -> (figure.Figure, axes.Axes):
         phottable = self.obs.events.table
 
         run_dist = sphere_dist(
@@ -1085,7 +1085,7 @@ def in_which_container(item, containers: list[set]):
     raise LookupError("Item is not in any container. Please ensure it is.")
 
 
-def getDataStores():
+def get_datastores():
     hess1_datastore = DataStore.from_dir("$HESS1")
     hess1u_datastore = DataStore.from_dir("$HESS1U")
 
@@ -1129,7 +1129,7 @@ def bare_load_mplets(
         mplet_list[k].objectifyColumns()
 
     mplets = mplet_list[0]
-    mplets.appendMultiplets(*mplet_list[1:])
+    mplets.append_multiplets(*mplet_list[1:])
 
     with open(f"testing/pkl_jugs/n{Nsearch}/mplets_bare.pkl", "wb") as f:
         dill.dump(mplets, f)
@@ -1140,18 +1140,18 @@ def mplet_manips(mplets: Multiplets, Nsearch: int = 4) -> str:
     from tevcat import TeVCat
 
     tevcat = TeVCat()
-    mplets.searchTeVCat(tevcat.sources)
+    mplets.search_tevcat(tevcat.sources)
 
-    datastores = getDataStores()
+    datastores = get_datastores()
     ds_mplet_indices = [
         in_which_container(id, containers=[ds.obs_ids for ds in datastores])
         for id in tqdm(mplets.table["OBS_ID"].data)
     ]
 
     mplets.table["DS_INDEX"] = ds_mplet_indices
-    mplets.addRMS()
+    mplets.add_rms()
 
-    mplets.createReduced()
+    mplets.create_reduced()
 
     redpath = f"testing/pkl_jugs/n{Nsearch}/reduced0.pkl"
     with open(redpath, "wb") as f:
@@ -1164,26 +1164,26 @@ def mplet_manips(mplets: Multiplets, Nsearch: int = 4) -> str:
 
 def reduced_manips(redpath: str, Nsearch: int = 4):
     rd = Reduced(redpath)
-    rd.loadObservations(per_ds=True)
-    rd.loadNavtable()
+    rd.load_observations(per_ds=True)
+    rd.load_navtable()
 
     print("dumping navtable")
     with open(f"testing/pkl_jugs/n{Nsearch}/navtab.pkl", "wb") as f:
         dill.dump(rd.navtable, f)
 
     print("Adding PNT metadata.")
-    rd.addPNTAltitude()
-    rd.addDistanceToPNT()
+    rd.add_pnt_altitude()
+    rd.add_pnt_distance()
     print("Adding exponential fits.")
-    rd.addExponentialDtFits()
+    rd.add_exponential_dt_fits()
     print("Adding Lambda ratio significance.")
-    rd.addLambdaRatioSignificace()
+    rd.add_lambda_ratio_significance()
     print("Correcting for exposure.")
     with open(
         "testing/mc_scanner/real_dataset_dumps/hbl/stacked_datasets.pkl", "rb"
     ) as f:
         exposure: WcsNDMap = dill.load(f).exposure
-    rd.addExposureCorrectedP(exposure)
+    rd.add_exposure_corrected_p(exposure)
 
     with open(f"testing/pkl_jugs/n{Nsearch}/reduced_complete.pkl", "wb") as f:
         dill.dump(rd.reduced, f)
