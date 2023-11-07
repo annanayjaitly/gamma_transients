@@ -720,16 +720,6 @@ def triplet_hist2d_saver(table, bins, position_src=None):
 
         dec_avg = np.average(table["DEC"], axis=1) - position_src.dec.deg
 
-        ra_1, dec_1 = (
-            table["RA"][:, 0] - position_src.ra.deg,
-            table["DEC"][:, 0] - position_src.dec.deg,
-        )
-
-        ra_2, dec_2 = (
-            table["RA"][:, -1] - position_src.ra.deg,
-            table["DEC"][:, -1] - position_src.dec.deg,
-        )
-
         range_ra = np.max(
             np.abs(
                 np.array(
@@ -755,18 +745,11 @@ def triplet_hist2d_saver(table, bins, position_src=None):
 
         dec_avg = np.average(table["DEC"], axis=1)
 
-        ra_1, dec_1 = table["RA"][:, 0], table["DEC"][:, 0]
-
-        ra_2, dec_2 = table["RA"][:, -1], table["DEC"][:, -1]
-
-        range_ra = np.max(np.abs(np.array(np.max(table["RA"]), np.min(table["RA"]))))
-        range_dec = np.max(np.abs(np.array(np.max(table["DEC"]), np.min(table["DEC"]))))
-        range_var = np.max([range_ra, range_dec])
         range_ = None
 
     N = table["RA"].shape[1]
 
-    counts, xedges, yedges, im0 = ax0.hist2d(
+    _,_,_, im0 = ax0.hist2d(
         ra_avg, dec_avg, bins=bins, cmap=plt.cm.jet, range=range_
     )
 
