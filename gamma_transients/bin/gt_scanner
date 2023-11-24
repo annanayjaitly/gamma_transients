@@ -8,46 +8,137 @@ import argparse
 from astropy.coordinates import SkyCoord
 from gammapy.data import DataStore
 
-from gamma_transients.core import multiplet_scanner
+from gamma_transients import core
+from tqdm import tqdm
 
 argp = argparse.ArgumentParser()
-argp.add_argument("--ra", action="store", dest="ra", type=float, required=False)
-argp.add_argument("--dec", action="store", dest="dec", type=float, required=False)
-argp.add_argument("--data-store", action="store", dest="data_store", type=str, required=True)
-argp.add_argument("--dt", action="store", dest="dt", type=float, required=True)
-argp.add_argument("--da", action="store", dest="da", type=float, required=True)
+argp.add_argument(
+    "--ra",
+    action="store",
+    dest="ra",
+    type=float,
+    required=False,
+    help="right ascension of target in deg",
+)
+argp.add_argument(
+    "--dec",
+    action="store",
+    dest="dec",
+    type=float,
+    required=False,
+    help="declination of target in deg",
+)
+argp.add_argument(
+    "--data-store",
+    action="store",
+    dest="data_store",
+    type=str,
+    required=True,
+    help="path to datastore",
+)
+argp.add_argument(
+    "--dt", action="store", dest="dt", type=float, required=True, help="max time sep ns"
+)
+argp.add_argument(
+    "--da",
+    action="store",
+    dest="da",
+    type=float,
+    required=True,
+    help="max angular sep in deg",
+)
 argp.add_argument("--dr", action="store", dest="dr", type=float, required=True)
-argp.add_argument("--output", action="store", dest="output", type=str, required=False)
-argp.add_argument("--Nmax", action="store", dest="Nmax", type=int, required=False, default=None)
-argp.add_argument('--Nmin', action='store', dest='Nmin', type=int, required=False, default=None)
-argp.add_argument("--output-auto-naming", action="store_true", dest="output_auto_naming", required=False)
+argp.add_argument(
+    "--output",
+    action="store",
+    dest="output",
+    type=str,
+    required=False,
+    help="Output path",
+)
+argp.add_argument(
+    "--Nmax",
+    action="store",
+    dest="Nmax",
+    type=int,
+    required=False,
+    default=None,
+    help="maximum multiplet size",
+)
+argp.add_argument(
+    "--Nmin",
+    action="store",
+    dest="Nmin",
+    type=int,
+    required=False,
+    default=None,
+    help="minimum multiplet size",
+)
+argp.add_argument(
+    "--output-auto-naming",
+    action="store_true",
+    dest="output_auto_naming",
+    required=False,
+)
 argp.add_argument("--prefix", action="store", dest="prefix", type=str, required=False)
 argp.add_argument("--verbose", action="store_true", dest="verbose", required=False)
-argp.add_argument("--run-search-radius", action="store", dest="run_search_radius", type=float, default=5.0,
-                  required=False)
-argp.add_argument("--gal", action="store", dest="gal", type=float, default=0.0, required=False)
-argp.add_argument("--galb1", action="store", dest="galb1", type=float, default=0.0, required=False)
-argp.add_argument("--galb2", action="store", dest="galb2", type=float, default=0.0, required=False)
-argp.add_argument("--run", action="append", dest="run", type=int, default=[], required=False)
+argp.add_argument(
+    "--run-search-radius",
+    action="store",
+    dest="run_search_radius",
+    type=float,
+    default=5.0,
+    required=False,
+)
+argp.add_argument(
+    "--gal", action="store", dest="gal", type=float, default=0.0, required=False
+)
+argp.add_argument(
+    "--galb1", action="store", dest="galb1", type=float, default=0.0, required=False
+)
+argp.add_argument(
+    "--galb2", action="store", dest="galb2", type=float, default=0.0, required=False
+)
+argp.add_argument(
+    "--run", action="append", dest="run", type=int, default=[], required=False
+)
+argp.add_argument("--overwrite", action="store_true", required=False)
+argp.add_argument("--parallel", action="store_true", required=False)
 
 args = argp.parse_args()
 
 if args.output_auto_naming:
     if args.gal == 0:
         if args.galb1 == 0 and args.galb2 == 0:
-            output_dir = Path(args.prefix) / ("target_ra%s_dec%s_dt%s_da%s_dr%s_Nmin%s_Nmax%s" % (
-                args.ra, args.dec, args.dt, args.da, args.dr, args.Nmin, args.Nmax))
+            output_dir = Path(args.prefix) / (
+                "target_ra%s_dec%s_dt%s_da%s_dr%s_Nmin%s_Nmax%s"
+                % (args.ra, args.dec, args.dt, args.da, args.dr, args.Nmin, args.Nmax)
+            )
         else:
-            output_dir = Path(args.prefix) / ("target_b%s_%s_dt%s_da%s_dr%s_Nmin%s_Nmax%s" % (
-                args.galb1, args.galb2, args.dt, args.da, args.dr, args.Nmin, args.Nmax))
+            output_dir = Path(args.prefix) / (
+                "target_b%s_%s_dt%s_da%s_dr%s_Nmin%s_Nmax%s"
+                % (
+                    args.galb1,
+                    args.galb2,
+                    args.dt,
+                    args.da,
+                    args.dr,
+                    args.Nmin,
+                    args.Nmax,
+                )
+            )
     else:
         output_dir = Path(args.prefix) / (
-                "target_gal%s_dt%s_da%s_dr%s_Nmin%s_Nmax%s" % (args.gal, args.dt, args.da, args.dr, args.Nmin, args.Nmax))
+            "target_gal%s_dt%s_da%s_dr%s_Nmin%s_Nmax%s"
+            % (args.gal, args.dt, args.da, args.dr, args.Nmin, args.Nmax)
+        )
 else:
     output_dir = Path(args.output)
 
-output_dir.mkdir(parents=True,
-                 exist_ok=False)  # create all parents directory, but throwing an exeption if output directory exists
+
+output_dir.mkdir(
+    parents=True, exist_ok=args.overwrite
+)  # create all parents directory, but throwing an exeption if output directory exists
 
 data_store = DataStore.from_dir(args.data_store)
 
@@ -58,29 +149,49 @@ pos = None
 
 if args.gal == 0:
     if args.galb1 == 0 and args.galb2 == 0:
-        pos = SkyCoord(args.ra, args.dec, unit='deg', frame="icrs").icrs
-        selection = dict(type="sky_circle", frame="icrs", lon=f"{pos.ra.degree}", lat=f"{pos.dec.degree}",
-                         radius=f"{args.run_search_radius} deg")
+        pos = SkyCoord(args.ra, args.dec, unit="deg", frame="icrs").icrs
+        selection = dict(
+            type="sky_circle",
+            frame="icrs",
+            lon=f"{pos.ra.degree}",
+            lat=f"{pos.dec.degree}",
+            radius=f"{args.run_search_radius} deg",
+        )
     else:
         print("Galactic selection for b = (%s,%s)°" % (args.galb1, args.galb2))
         print("Overriding dr parameter")
         r_area = 360.0
-        pos = SkyCoord(0, 0, unit='deg', frame="galactic").icrs
-        selection = dict(type='par_box', variable='GLAT_PNT', value_range=[args.galb1, args.galb2], inverted=False)
+        pos = SkyCoord(0, 0, unit="deg", frame="galactic").icrs
+        selection = dict(
+            type="par_box",
+            variable="GLAT_PNT",
+            value_range=[args.galb1, args.galb2],
+            inverted=False,
+        )
 
 if args.gal > 0:
     print("Galactic selection for |b| < %s°" % args.gal)
     print("Overriding dr parameter")
     r_area = 360.0
-    pos = SkyCoord(0, 0, unit='deg', frame="galactic").icrs
-    selection = dict(type='par_box', variable='GLAT_PNT', value_range=[-args.gal, args.gal], inverted=False)
+    pos = SkyCoord(0, 0, unit="deg", frame="galactic").icrs
+    selection = dict(
+        type="par_box",
+        variable="GLAT_PNT",
+        value_range=[-args.gal, args.gal],
+        inverted=False,
+    )
 
 if args.gal < 0:
     print("Extragalactic selection for |b| > %s°" % (-args.gal))
     print("Overriding dr parameter")
     r_area = 360.0
-    pos = SkyCoord(0, 0, unit='deg', frame="galactic").icrs
-    selection = dict(type='par_box', variable='GLAT_PNT', value_range=[args.gal, -args.gal], inverted=True)
+    pos = SkyCoord(0, 0, unit="deg", frame="galactic").icrs
+    selection = dict(
+        type="par_box",
+        variable="GLAT_PNT",
+        value_range=[args.gal, -args.gal],
+        inverted=True,
+    )
 
 if len(args.run) == 0:
     obs_table = data_store.obs_table.select_observations(selection)
@@ -95,28 +206,42 @@ if len(obs_list) == 0:
     quit()
 else:
     print("Number of observations: " + str(len(obs_list)))
-    fname = Path(output_dir / f'obs.list')
-    with open(fname, 'wb') as fl:
+    fname = Path(output_dir / f"obs.list")
+    with open(fname, "wb") as fl:
         dill.dump(obs_list, fl)
 
+print("Getting observations...")
 obs = data_store.get_observations(obs_list)
-events = [data_store.obs(obs).events for obs in obs_list]
-
-fname = Path(output_dir / f'events_sc.pkl')
-
-with open(fname, 'wb') as fl:
+print("Obtained observations.")
+print("Getting events...")
+events = [
+    data_store.obs(obs, required_irf="point-like").events for obs in tqdm(obs_list)
+]
+print("Recieved events.")
+fname = Path(output_dir / f"events_sc.pkl")
+print("Dumping events.")
+with open(fname, "wb") as fl:
     dill.dump(events, fl)
 
-t = multiplet_scanner(target=pos, events_lists=events, dt_threshold=args.dt, r_deg=args.da, r_area=r_area,
-                      Nmax=args.Nmax, Nmin=args.Nmin)
+if args.parallel:
+    scanner = core.scanner_parallel
+else:
+    scanner = core.multiplet_scanner
+
+t = scanner(
+    target=pos,
+    events_lists=events,
+    dt_threshold=args.dt,
+    r_deg=args.da,
+    r_area=r_area,
+    Nmax=args.Nmax,
+    Nmin=args.Nmin,
+)
 
 # if t is not None and t_ is not None:
 print("Number of multiplets found: " + str(len(t)))
-fname = Path(output_dir / f'multiplets.pkl')
-with open(fname, 'wb') as fl:
+fname = Path(output_dir / f"multiplets.pkl")
+with open(fname, "wb") as fl:
     dill.dump(t, fl)
 if args.verbose:
     print(t)
-    # print(t_)
-else:
-    print("No multiplets found")
