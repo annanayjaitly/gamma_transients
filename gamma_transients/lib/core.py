@@ -84,7 +84,8 @@ def multiplet_scanner(
     Nmin: int = 2,
     Nmax: Union[int, None] = None,
     verbose: bool = False,
-    remove_zero_coordinates: bool = False
+    remove_zero_coordinates: bool = False,
+    convert_time = True,
 ):
     """Scans for Nmax-multiplets in specified sky region around target, blind search not implemented yet.
 
@@ -111,128 +112,129 @@ def multiplet_scanner(
 
     da_cut = r_deg
 
-    if target is not None:
-        for counter, event_list in enumerate(events_lists):
-            events_table = event_list.table.copy()
+    if not target:
+        raise TypeError("Blind search not implemented yet, "
+                        "'target' should be specified")
 
-            events_table["coord"] = event_list.radec  # create a SkyCoord column
+    for counter, event_list in enumerate(events_lists):
+        events_table = event_list.table.copy()
+
+        events_table["coord"] = event_list.radec  # create a SkyCoord column
+        if convert_time:
             events_table["TIME"] = event_list.time.datetime64
-            events_table["fTIME"] = (
-                events_table["TIME"].copy().astype(np.float64)
-            )  # create a float64 time data column
+        else:
+            events_table["TIME"] = event_list.time
 
-            events_table = events_table[
-                target.separation(events_table["coord"]).degree <= r_area
-            ]  # select events within r_area of source
+        events_table["fTIME"] = (
+            events_table["TIME"].copy().astype(np.float64)
+        )  # create a float64 time data column
 
-            if remove_zero_coordinates:
-                events_table = events_table[(events_table["RA"] != 0.0) & (events_table["DEC"] != 0.0)]
+        events_table = events_table[
+            target.separation(events_table["coord"]).degree <= r_area
+        ]  # select events within r_area of source
 
-            n_scanned += len(events_table)
+        if remove_zero_coordinates:
+            events_table = events_table[(events_table["RA"] != 0.0) & (events_table["DEC"] != 0.0)]
 
-            events_table.sort(keys="TIME")  # sort events by timestamp
+        n_scanned += len(events_table)
 
-            photons = [
-                Photon(
-                    t=event["fTIME"],
-                    ra=event["RA"],
-                    dec=event["DEC"],
-                    id_=event["EVENT_ID"],
-                )
-                for event in events_table
-            ]
+        events_table.sort(keys="TIME")  # sort events by timestamp
 
-            t_vector = events_table["fTIME"]
-
-            coord_vector = events_table["coord"]
-
-            dt_matrix = np.triu(
-                t_vector - t_vector.reshape(-1, 1), k=1
-            )  # create dt_matrix
-            sep_matrix = np.triu(
-                coord_vector.separation(coord_vector.reshape(-1, 1)).degree, k=1
+        photons = [
+            Photon(
+                t=event["fTIME"],
+                ra=event["RA"],
+                dec=event["DEC"],
+                id_=event["EVENT_ID"],
             )
+            for event in events_table
+        ]
 
-            doublet_ids = np.argwhere(
-                (dt_matrix <= dt_threshold)
-                & (dt_matrix > 0)
-                & (sep_matrix <= da_cut)
-                & (sep_matrix > 0)
-            )  # find doublets, correspond to first and last event in multiplet if Nmax >2
+        t_vector = events_table["fTIME"]
 
-            # get indices of first and second part of doublets
-            doublet_ids1, doublet_ids2 = doublet_ids[:, 0], doublet_ids[:, 1]
-            if verbose:
-                print(f"{len(doublet_ids1)} doublets found)\r")
-            # print('doublet_ids1, doublet_ids2: ', doublet_ids1, doublet_ids2)
-            doublets_save.append(doublet_ids1)
-            doublets_save.append(doublet_ids2)
+        coord_vector = events_table["coord"]
 
-            multiplets_max = f_N(
-                photons,
-                [
-                    [photons[id1], photons[id2]]
-                    for id1, id2 in zip(doublet_ids1, doublet_ids2)
-                ],
-                dt_threshold,
-                r_deg,
-                Nmin,
-                Nmax,
-            )
-
-            if len(multiplets_max) > 0:
-                for multiplet in multiplets_max:
-                    if Nmin <= len(multiplet) and (
-                        (Nmax is None) or (len(multiplet) <= Nmax)
-                    ):
-                        names = [
-                            name
-                            for name in events_table.colnames
-                            if len(events_table[name].shape) <= 1
-                        ]  # In case table has multidimensional columns, we must remove them
-                        events_df = events_table[names].to_pandas()
-                        find_photons = events_df.isin(
-                            {"EVENT_ID": [photon.id_ for photon in multiplet]}
-                        )
-                        find_photons = find_photons.any(axis="columns").to_numpy()
-                        multiplet_table = events_table[find_photons]
-
-                        dt = multiplet[-1].t - multiplet[0].t
-                        da = (
-                            make_circle(
-                                np.c_[multiplet_table["RA"], multiplet_table["DEC"]]
-                            )[2]
-                            * 2
-                        )
-                        if (da < r_deg) & (dt < dt_threshold):
-                            hits += 1
-                            rows_multiplets.append(
-                                [
-                                    len(multiplet),
-                                    multiplet_table["OBS_ID"][0],
-                                    multiplet_table["EVENT_ID"].data,
-                                    multiplet_table["RA"].data,
-                                    multiplet_table["DEC"].data,
-                                    multiplet_table["TIME"].data,
-                                    multiplet_table["ENERGY"].data,
-                                    dt,
-                                    da,
-                                ]
-                            )
-
-            print(
-                f"\rScan no. {counter + 1}/{len(events_lists)} ({100 * (counter + 1) / len(events_lists):2.2f}%) \t| scanned {n_scanned} events so far \t| {Nmax}-multiplets: {hits} hits so far\r",
-                end="\r",
-            )
-
-    if len(rows_multiplets) > 0:
-        multiplets_table = Table(
-            rows=rows_multiplets,
-            names=("Nmax", "OBS_ID", "ID", "RA", "DEC", "TIME", "ENERGY", "dt", "da"),
+        dt_matrix = np.triu(
+            t_vector - t_vector.reshape(-1, 1), k=1
+        )  # create dt_matrix
+        sep_matrix = np.triu(
+            coord_vector.separation(coord_vector.reshape(-1, 1)).degree, k=1
         )
 
-        return multiplets_table
+        doublet_ids = np.argwhere(
+            (dt_matrix <= dt_threshold)
+            & (dt_matrix > 0)
+            & (sep_matrix <= da_cut)
+            & (sep_matrix > 0)
+        )  # find doublets, correspond to first and last event in multiplet if Nmax >2
+
+        # get indices of first and second part of doublets
+        doublet_ids1, doublet_ids2 = doublet_ids[:, 0], doublet_ids[:, 1]
+        if verbose:
+            print(f"{len(doublet_ids1)} doublets found)\r")
+        # print('doublet_ids1, doublet_ids2: ', doublet_ids1, doublet_ids2)
+        doublets_save.append(doublet_ids1)
+        doublets_save.append(doublet_ids2)
+
+        multiplets_max = f_N(
+            photons,
+            [
+                [photons[id1], photons[id2]]
+                for id1, id2 in zip(doublet_ids1, doublet_ids2)
+            ],
+            dt_threshold,
+            r_deg,
+            Nmin,
+            Nmax,
+        )
+
+        if len(multiplets_max) > 0:
+            for multiplet in multiplets_max:
+                if Nmin <= len(multiplet) and (
+                    (Nmax is None) or (len(multiplet) <= Nmax)
+                ):
+                    names = [
+                        name
+                        for name in events_table.colnames
+                        if len(events_table[name].shape) <= 1
+                    ]  # In case table has multidimensional columns, we must remove them
+                    events_df = events_table[names].to_pandas()
+                    find_photons = events_df.isin(
+                        {"EVENT_ID": [photon.id_ for photon in multiplet]}
+                    )
+                    find_photons = find_photons.any(axis="columns").to_numpy()
+                    multiplet_table = events_table[find_photons]
+
+                    dt = multiplet[-1].t - multiplet[0].t
+                    da = (
+                        make_circle(
+                            np.c_[multiplet_table["RA"], multiplet_table["DEC"]]
+                        )[2]
+                        * 2
+                    )
+                    if (da < r_deg) & (dt < dt_threshold):
+                        hits += 1
+                        rows_multiplets.append(
+                            [
+                                len(multiplet),
+                                multiplet_table["OBS_ID"][0],
+                                multiplet_table["EVENT_ID"].data,
+                                multiplet_table["RA"].data,
+                                multiplet_table["DEC"].data,
+                                multiplet_table["TIME"].data,
+                                multiplet_table["ENERGY"].data,
+                                dt,
+                                da,
+                            ]
+                        )
+
+        print(
+            f"\rScan no. {counter + 1}/{len(events_lists)} ({100 * (counter + 1) / len(events_lists):2.2f}%) \t| scanned {n_scanned} events so far \t| {Nmax}-multiplets: {hits} hits so far\r",
+            end="\r",
+        )
+
     return Table(
+        rows=rows_multiplets,
         names=("Nmax", "OBS_ID", "ID", "RA", "DEC", "TIME", "ENERGY", "dt", "da"),
     )
 
